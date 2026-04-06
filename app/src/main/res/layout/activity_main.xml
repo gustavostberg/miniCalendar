@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    android:id="@+id/root"
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:orientation="vertical"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <TextView
+        android:id="@+id/header"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="16sp"
+        android:padding="8dp"
+        android:fontFamily="monospace" />
+
+    <View
+        android:id="@+id/focusSink"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:focusable="true"
+        android:focusableInTouchMode="true" />
+
+    <FrameLayout
+        android:id="@+id/bodyContainer"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <TextView
+            android:id="@+id/body"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:textSize="10sp"
+            android:padding="8dp"
+            android:focusableInTouchMode="true"
+            android:fontFamily="monospace" />
+
+    </FrameLayout>
+
+    <EditText
+        android:id="@+id/captureInput"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="10sp"
+        android:padding="8dp"
+        android:fontFamily="monospace"
+        android:inputType="text"
+        android:imeOptions="actionDone"
+        android:visibility="gone"
+        android:background="@android:color/white"
+        android:hint="title  YYMMDD YYMMDD HHMM HHMM" />
+
+</LinearLayout>

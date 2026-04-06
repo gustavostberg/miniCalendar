@@ -1,0 +1,155 @@
+<resources>
+    <string name="app_name">miniCalendar</string>
+
+    <string name="toast_could_not_read_selected_email">Kunde inte läsa vald e-postadress</string>
+    <string name="toast_calendar_permission_denied">Kalenderbehörighet nekades</string>
+    <string name="toast_contacts_permission_denied">Kontaktbehörighet nekades</string>
+    <string name="toast_deleted_this_occurrence">Den här förekomsten togs bort</string>
+    <string name="toast_deleted_this_and_future">Den här och framtida förekomster togs bort</string>
+    <string name="toast_deleted_whole_series">Hela serien togs bort</string>
+    <string name="toast_delete_failed">Kunde inte ta bort</string>
+    <string name="toast_deleted_event">Borttagen: %1$s</string>
+    <string name="toast_no_contact_picker">Ingen kontaktväljare tillgänglig</string>
+    <string name="toast_no_calendars">Inga kalendrar hittades</string>
+
+    <string name="label_none">Ingen</string>
+    <string name="label_daily">Dagligen</string>
+    <string name="label_weekly">Veckovis</string>
+    <string name="label_monthly">Månadsvis</string>
+    <string name="label_yearly">Årligen</string>
+    <string name="label_repeat">Upprepa</string>
+    <string name="label_all_day">Hela dagen</string>
+    <string name="label_no_events">Inga händelser</string>
+    <string name="label_yes">Ja</string>
+    <string name="label_no">Nej</string>
+    <string name="label_ok">OK</string>
+    <string name="label_missing">Saknas</string>
+    <string name="label_permissions">Behörigheter</string>
+    <string name="label_settings">Inställningar</string>
+    <string name="label_calendar">Kalender</string>
+    <string name="label_title">Titel</string>
+    <string name="label_start_date">Startdatum</string>
+    <string name="label_end_date">Slutdatum</string>
+    <string name="label_start_time">Starttid</string>
+    <string name="label_end_time">Sluttid</string>
+    <string name="label_location">Plats</string>
+    <string name="label_reminder">Påminnelse</string>
+    <string name="label_description">Beskrivning</string>
+    <string name="label_invitees">Deltagare</string>
+    <string name="label_attendees_count">%1$d deltagare</string>
+    <string name="label_optional">Valfritt</string>
+    <string name="label_event_title_hint">Händelsetitel</string>
+    <string name="label_email_hint">namn@exempel.se</string>
+    <string name="label_no_invitees">Inga deltagare tillagda</string>
+    <string name="label_add">Lägg till</string>
+    <string name="label_remove">x</string>
+    <string name="label_calendar_access_required">Kalenderåtkomst krävs</string>
+    <string name="label_grant_permissions">Ge dessa behörigheter:</string>
+    <string name="label_press_i_permission">Tryck i för att ge behörighet</string>
+    <string name="label_press_q_settings">Tryck q för inställningar</string>
+    <string name="label_no_event_selected">Ingen händelse vald.</string>
+    <string name="label_back_hint">b = tillbaka</string>
+    <string name="label_delete_recurring_event">Ta bort återkommande händelse:</string>
+    <string name="label_delete_this_occurrence">1 denna förekomst</string>
+    <string name="label_delete_this_and_future">2 denna och framtida</string>
+    <string name="label_delete_whole_series">3 hela serien</string>
+    <string name="label_cancel_hint">b avbryt</string>
+    <string name="label_delete_confirm">Ta bort "%1$s"? Tryck d igen för att bekräfta, b för att avbryta.</string>
+    <string name="label_event_controls_recurring">e redigera   d ta bort…   b tillbaka</string>
+    <string name="label_event_controls_single">e redigera   d ta bort   b tillbaka</string>
+    <string name="label_no_calendar_access">Ingen kalenderåtkomst</string>
+    <string name="label_no_calendars_enabled">Inga kalendrar aktiverade</string>
+    <string name="label_no_title">Ingen titel</string>
+    <string name="label_bad_start_date">Felaktigt startdatum: %1$s</string>
+    <string name="label_bad_end_date">Felaktigt slutdatum: %1$s</string>
+    <string name="label_end_date_before_start">Slutdatum är före startdatum</string>
+    <string name="label_bad_start_time">Felaktig starttid: %1$s</string>
+    <string name="label_bad_end_time">Felaktig sluttid: %1$s</string>
+    <string name="label_end_must_be_after_start">Sluttiden måste vara efter starttiden</string>
+    <string name="label_update_failed">Uppdatering misslyckades</string>
+    <string name="label_save_failed">Kunde inte spara</string>
+    <string name="label_new_all_day_event">Ny heldagshändelse</string>
+    <string name="label_new_timed_event">Ny tidsatt händelse</string>
+    <string name="label_edit_all_day_event">Redigera heldagshändelse</string>
+    <string name="label_edit_timed_event">Redigera tidsatt händelse</string>
+    <string name="label_save">Spara</string>
+    <string name="label_cancel">Avbryt</string>
+    <string name="label_permissions_section">Behörigheter</string>
+    <string name="label_permissions_calendar_status">  Kalender       %1$s</string>
+    <string name="label_permissions_contacts_status">  Kontakter      %1$s</string>
+    <string name="label_permissions_notifications_status">  Notiser        %1$s</string>
+    <string name="label_request_calendar_permission">  i  Begär kalenderbehörighet</string>
+    <string name="label_calendars_section">Kalendrar</string>
+    <string name="label_ensure_google_calendar_synced">  Kontrollera att Google Kalender är synkad</string>
+    <string name="label_calendar_table_header">  #  R  W  Namn</string>
+    <string name="label_unnamed_calendar">(namnlös kalender)</string>
+    <string name="label_alarm_section">Alarm</string>
+    <string name="label_alarm_enabled_status">  Aktiverad  %1$s</string>
+    <string name="label_alarm_fallback_status">  Reserv     %1$s</string>
+    <string name="label_week_start_status">  Veckostart  %1$s</string>
+    <string name="label_week_start_system_default">Systemstandard (%1$s)</string>
+    <string name="label_controls_section">Kontroller</string>
+    <string name="label_controls_toggle_read">  1-9  Växla läskalendrar</string>
+    <string name="label_controls_set_write">  w    Välj skrivkalender</string>
+    <string name="label_controls_toggle_alarm">  n    Växla alarmmotor</string>
+    <string name="label_controls_cycle_fallback">  m    Växla reservtid</string>
+    <string name="label_controls_cycle_week_start">  y    Ändra veckostart</string>
+    <string name="label_controls_page">  o/p  Sida upp/ned</string>
+    <string name="label_controls_request_permission">  i    Begär behörighet</string>
+    <string name="label_controls_week">  f    Veckovy</string>
+    <string name="label_controls_month">  a    Månadsvy</string>
+    <string name="label_controls_today">  t    Gå till idag</string>
+    <string name="label_page_status">Sida %1$d/%2$d  ·  o/p skrolla</string>
+    <string name="label_footer_focus">s/d dag  t idag  b tillbaka  f vecka  r dag  a månad  c/g ny</string>
+    <string name="label_footer_day">z/x dag  t idag  f vecka  a månad  c/g ny  q inst%1$s</string>
+    <string name="label_footer_day_page_info">  ·  o/p sida</string>
+    <string name="label_footer_week">o/p sida  s/d dag  t idag  z/x vecka  r dag  a månad  c/g ny  q inst  b tillbaka</string>
+    <string name="label_footer_event_card">s/d dag  t idag  f vecka  a månad  c/g ny  q inst  b tillbaka</string>
+    <string name="label_footer_page_suffix">  ·  o/p sida %1$d/%2$d</string>
+    <string name="label_footer_month">s/d dag  t idag  z/x månad  f vecka  r dag  c/g ny  q inst  b tillbaka h footer</string>
+    <string name="label_at_time_of_event">Vid start</string>
+    <string name="label_days_before">%1$d dagar innan</string>
+    <string name="label_minutes_before">%1$d min innan</string>
+    <string name="label_5_min_before">5 min innan</string>
+    <string name="label_10_min_before">10 min innan</string>
+    <string name="label_15_min_before">15 min innan</string>
+    <string name="label_30_min_before">30 min innan</string>
+    <string name="label_1_hour_before">1 timme innan</string>
+    <string name="label_1_day_before">1 dag innan</string>
+    <string name="label_2_days_before">2 dagar innan</string>
+    <string name="label_1_week_before">1 vecka innan</string>
+    <string name="label_week_number">V%1$d</string>
+    <string name="notification_channel_name">Händelselarm</string>
+    <string name="notification_channel_description">Alarmnotiser för kommande händelser</string>
+    <string name="notification_snooze_5m">Snooza 5 min</string>
+    <string name="notification_snooze_15m">Snooza 15 min</string>
+    <string name="notification_dismiss">Avfärda</string>
+    <string name="notification_default_event_title">Händelse</string>
+
+    <string-array name="repeat_labels">
+        <item>@string/label_none</item>
+        <item>@string/label_daily</item>
+        <item>@string/label_weekly</item>
+        <item>@string/label_monthly</item>
+        <item>@string/label_yearly</item>
+    </string-array>
+
+    <string-array name="reminder_labels_timed">
+        <item>@string/label_none</item>
+        <item>@string/label_at_time_of_event</item>
+        <item>@string/label_5_min_before</item>
+        <item>@string/label_10_min_before</item>
+        <item>@string/label_15_min_before</item>
+        <item>@string/label_30_min_before</item>
+        <item>@string/label_1_hour_before</item>
+        <item>@string/label_1_day_before</item>
+    </string-array>
+
+    <string-array name="reminder_labels_all_day">
+        <item>@string/label_none</item>
+        <item>@string/label_at_time_of_event</item>
+        <item>@string/label_1_day_before</item>
+        <item>@string/label_2_days_before</item>
+        <item>@string/label_1_week_before</item>
+    </string-array>
+</resources>

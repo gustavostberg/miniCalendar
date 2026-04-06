@@ -1,0 +1,155 @@
+<resources>
+    <string name="app_name">miniCalendar</string>
+
+    <string name="toast_could_not_read_selected_email">No se pudo leer el correo seleccionado</string>
+    <string name="toast_calendar_permission_denied">Permiso de calendario denegado</string>
+    <string name="toast_contacts_permission_denied">Permiso de contactos denegado</string>
+    <string name="toast_deleted_this_occurrence">Se eliminó esta ocurrencia</string>
+    <string name="toast_deleted_this_and_future">Se eliminaron esta y las futuras ocurrencias</string>
+    <string name="toast_deleted_whole_series">Se eliminó toda la serie</string>
+    <string name="toast_delete_failed">No se pudo eliminar</string>
+    <string name="toast_deleted_event">Eliminado: %1$s</string>
+    <string name="toast_no_contact_picker">No hay selector de contactos disponible</string>
+    <string name="toast_no_calendars">No se encontraron calendarios</string>
+
+    <string name="label_none">Ninguno</string>
+    <string name="label_daily">Diario</string>
+    <string name="label_weekly">Semanal</string>
+    <string name="label_monthly">Mensual</string>
+    <string name="label_yearly">Anual</string>
+    <string name="label_repeat">Repetir</string>
+    <string name="label_all_day">Todo el día</string>
+    <string name="label_no_events">No hay eventos</string>
+    <string name="label_yes">Sí</string>
+    <string name="label_no">No</string>
+    <string name="label_ok">OK</string>
+    <string name="label_missing">Falta</string>
+    <string name="label_permissions">Permisos</string>
+    <string name="label_settings">Ajustes</string>
+    <string name="label_calendar">Calendario</string>
+    <string name="label_title">Título</string>
+    <string name="label_start_date">Fecha de inicio</string>
+    <string name="label_end_date">Fecha de fin</string>
+    <string name="label_start_time">Hora de inicio</string>
+    <string name="label_end_time">Hora de fin</string>
+    <string name="label_location">Ubicación</string>
+    <string name="label_reminder">Recordatorio</string>
+    <string name="label_description">Descripción</string>
+    <string name="label_invitees">Invitados</string>
+    <string name="label_attendees_count">%1$d asistentes</string>
+    <string name="label_optional">Opcional</string>
+    <string name="label_event_title_hint">Título del evento</string>
+    <string name="label_email_hint">nombre@example.com</string>
+    <string name="label_no_invitees">No se agregaron invitados</string>
+    <string name="label_add">Añadir</string>
+    <string name="label_remove">x</string>
+    <string name="label_calendar_access_required">Se requiere acceso al calendario</string>
+    <string name="label_grant_permissions">Concede estos permisos:</string>
+    <string name="label_press_i_permission">Pulsa i para conceder el permiso</string>
+    <string name="label_press_q_settings">Pulsa q para ajustes</string>
+    <string name="label_no_event_selected">No hay ningún evento seleccionado.</string>
+    <string name="label_back_hint">b = volver</string>
+    <string name="label_delete_recurring_event">Eliminar evento recurrente:</string>
+    <string name="label_delete_this_occurrence">1 esta ocurrencia</string>
+    <string name="label_delete_this_and_future">2 esta y las futuras</string>
+    <string name="label_delete_whole_series">3 toda la serie</string>
+    <string name="label_cancel_hint">b cancelar</string>
+    <string name="label_delete_confirm">¿Eliminar "%1$s"? Pulsa d otra vez para confirmar, b para cancelar.</string>
+    <string name="label_event_controls_recurring">e editar   d eliminar…   b volver</string>
+    <string name="label_event_controls_single">e editar   d eliminar   b volver</string>
+    <string name="label_no_calendar_access">Sin acceso al calendario</string>
+    <string name="label_no_calendars_enabled">No hay calendarios activados</string>
+    <string name="label_no_title">Sin título</string>
+    <string name="label_bad_start_date">Fecha de inicio incorrecta: %1$s</string>
+    <string name="label_bad_end_date">Fecha de fin incorrecta: %1$s</string>
+    <string name="label_end_date_before_start">La fecha de fin es anterior a la de inicio</string>
+    <string name="label_bad_start_time">Hora de inicio incorrecta: %1$s</string>
+    <string name="label_bad_end_time">Hora de fin incorrecta: %1$s</string>
+    <string name="label_end_must_be_after_start">La hora de fin debe ser posterior a la de inicio</string>
+    <string name="label_update_failed">Error al actualizar</string>
+    <string name="label_save_failed">Error al guardar</string>
+    <string name="label_new_all_day_event">Nuevo evento de todo el día</string>
+    <string name="label_new_timed_event">Nuevo evento con hora</string>
+    <string name="label_edit_all_day_event">Editar evento de todo el día</string>
+    <string name="label_edit_timed_event">Editar evento con hora</string>
+    <string name="label_save">Guardar</string>
+    <string name="label_cancel">Cancelar</string>
+    <string name="label_permissions_section">Permisos</string>
+    <string name="label_permissions_calendar_status">  Calendario       %1$s</string>
+    <string name="label_permissions_contacts_status">  Contactos        %1$s</string>
+    <string name="label_permissions_notifications_status">  Notificaciones   %1$s</string>
+    <string name="label_request_calendar_permission">  i  Solicitar permiso de calendario</string>
+    <string name="label_calendars_section">Calendarios</string>
+    <string name="label_ensure_google_calendar_synced">  Asegúrate de que Google Calendar esté sincronizado</string>
+    <string name="label_calendar_table_header">  #  R  W  Nombre</string>
+    <string name="label_unnamed_calendar">(calendario sin nombre)</string>
+    <string name="label_alarm_section">Alarma</string>
+    <string name="label_alarm_enabled_status">  Activada   %1$s</string>
+    <string name="label_alarm_fallback_status">  Respaldo   %1$s</string>
+    <string name="label_week_start_status">  Inicio semana  %1$s</string>
+    <string name="label_week_start_system_default">Predeterminado del sistema (%1$s)</string>
+    <string name="label_controls_section">Controles</string>
+    <string name="label_controls_toggle_read">  1-9  Alternar calendarios de lectura</string>
+    <string name="label_controls_set_write">  w    Establecer calendario de escritura</string>
+    <string name="label_controls_toggle_alarm">  n    Alternar motor de alarmas</string>
+    <string name="label_controls_cycle_fallback">  m    Cambiar tiempo de respaldo</string>
+    <string name="label_controls_cycle_week_start">  y    Cambiar inicio de semana</string>
+    <string name="label_controls_page">  o/p  Página arriba/abajo</string>
+    <string name="label_controls_request_permission">  i    Solicitar permiso</string>
+    <string name="label_controls_week">  f    Vista semanal</string>
+    <string name="label_controls_month">  a    Vista mensual</string>
+    <string name="label_controls_today">  t    Ir a hoy</string>
+    <string name="label_page_status">Página %1$d/%2$d  ·  o/p desplazar</string>
+    <string name="label_footer_focus">s/d día  t hoy  b volver  f semana  r día  a mes  c/g nuevo</string>
+    <string name="label_footer_day">z/x día  t hoy  f semana  a mes  c/g nuevo  q ajus%1$s</string>
+    <string name="label_footer_day_page_info">  ·  o/p página</string>
+    <string name="label_footer_week">o/p página  s/d día  t hoy  z/x semana  r día  a mes  c/g nuevo  q ajus  b volver</string>
+    <string name="label_footer_event_card">s/d día  t hoy  f semana  a mes  c/g nuevo  q ajus  b volver</string>
+    <string name="label_footer_page_suffix">  ·  o/p página %1$d/%2$d</string>
+    <string name="label_footer_month">s/d día  t hoy  z/x mes  f semana  r día  c/g nuevo  q ajus  b volver h pie</string>
+    <string name="label_at_time_of_event">A la hora del evento</string>
+    <string name="label_days_before">%1$d días antes</string>
+    <string name="label_minutes_before">%1$d min antes</string>
+    <string name="label_5_min_before">5 min antes</string>
+    <string name="label_10_min_before">10 min antes</string>
+    <string name="label_15_min_before">15 min antes</string>
+    <string name="label_30_min_before">30 min antes</string>
+    <string name="label_1_hour_before">1 hora antes</string>
+    <string name="label_1_day_before">1 día antes</string>
+    <string name="label_2_days_before">2 días antes</string>
+    <string name="label_1_week_before">1 semana antes</string>
+    <string name="label_week_number">S%1$d</string>
+    <string name="notification_channel_name">Alarmas de eventos</string>
+    <string name="notification_channel_description">Notificaciones de alarma para próximos eventos</string>
+    <string name="notification_snooze_5m">Posponer 5 min</string>
+    <string name="notification_snooze_15m">Posponer 15 min</string>
+    <string name="notification_dismiss">Descartar</string>
+    <string name="notification_default_event_title">Evento</string>
+
+    <string-array name="repeat_labels">
+        <item>@string/label_none</item>
+        <item>@string/label_daily</item>
+        <item>@string/label_weekly</item>
+        <item>@string/label_monthly</item>
+        <item>@string/label_yearly</item>
+    </string-array>
+
+    <string-array name="reminder_labels_timed">
+        <item>@string/label_none</item>
+        <item>@string/label_at_time_of_event</item>
+        <item>@string/label_5_min_before</item>
+        <item>@string/label_10_min_before</item>
+        <item>@string/label_15_min_before</item>
+        <item>@string/label_30_min_before</item>
+        <item>@string/label_1_hour_before</item>
+        <item>@string/label_1_day_before</item>
+    </string-array>
+
+    <string-array name="reminder_labels_all_day">
+        <item>@string/label_none</item>
+        <item>@string/label_at_time_of_event</item>
+        <item>@string/label_1_day_before</item>
+        <item>@string/label_2_days_before</item>
+        <item>@string/label_1_week_before</item>
+    </string-array>
+</resources>
