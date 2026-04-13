@@ -1,3 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">miniCalendar</string>
 
@@ -23,10 +24,25 @@
     <string name="label_yes">Ja</string>
     <string name="label_no">Nej</string>
     <string name="label_ok">OK</string>
+    <string name="label_granted">Beviljad</string>
+    <string name="label_required">Krävs</string>
+    <string name="label_grant">Ge</string>
+    <string name="label_open">Öppna</string>
     <string name="label_missing">Saknas</string>
     <string name="label_permissions">Behörigheter</string>
     <string name="label_settings">Inställningar</string>
+    <string name="label_dark_mode">Mörkt läge</string>
+    <string name="label_dark_mode_summary">Använd svart bakgrund med vit text.</string>
+    <string name="label_epaper_refresh">E-pappersuppdatering</string>
+    <string name="label_epaper_refresh_summary">Blinka skärmen vid vybyte för att minska ghosting.</string>
+    <string name="label_version">Version</string>
+    <string name="label_version_value">Version %1$s</string>
     <string name="label_calendar">Kalender</string>
+    <string name="label_calendar_access">Kalenderåtkomst</string>
+    <string name="label_notification_access">Notiser</string>
+    <string name="label_exact_alarm_access">Exakta alarm</string>
+    <string name="label_read">Läs</string>
+    <string name="label_write">Skriv</string>
     <string name="label_title">Titel</string>
     <string name="label_start_date">Startdatum</string>
     <string name="label_end_date">Slutdatum</string>
@@ -55,7 +71,7 @@
     <string name="label_delete_whole_series">3 hela serien</string>
     <string name="label_cancel_hint">b avbryt</string>
     <string name="label_delete_confirm">Ta bort "%1$s"? Tryck d igen för att bekräfta, b för att avbryta.</string>
-    <string name="label_event_controls_recurring">e redigera   d ta bort…   b tillbaka</string>
+    <string name="label_event_controls_recurring">e redigera   d ta bort...   b tillbaka</string>
     <string name="label_event_controls_single">e redigera   d ta bort   b tillbaka</string>
     <string name="label_no_calendar_access">Ingen kalenderåtkomst</string>
     <string name="label_no_calendars_enabled">Inga kalendrar aktiverade</string>
@@ -80,14 +96,21 @@
     <string name="label_permissions_notifications_status">  Notiser        %1$s</string>
     <string name="label_request_calendar_permission">  i  Begär kalenderbehörighet</string>
     <string name="label_calendars_section">Kalendrar</string>
+    <string name="label_settings_calendar_hint">Välj vilka kalendrar som ska läsas och vilken som ska vara standard för skrivning.</string>
     <string name="label_ensure_google_calendar_synced">  Kontrollera att Google Kalender är synkad</string>
     <string name="label_calendar_table_header">  #  R  W  Namn</string>
     <string name="label_unnamed_calendar">(namnlös kalender)</string>
     <string name="label_alarm_section">Alarm</string>
+    <string name="label_alarm_engine">Alarmmotor</string>
+    <string name="label_alarm_engine_summary">Notiser: %1$s</string>
     <string name="label_alarm_enabled_status">  Aktiverad  %1$s</string>
     <string name="label_alarm_fallback_status">  Reserv     %1$s</string>
+    <string name="label_fallback_time">Reservtid</string>
+    <string name="label_fallback_summary">Används när en händelse saknar påminnelse.</string>
+    <string name="label_week_start">Veckostart</string>
     <string name="label_week_start_status">  Veckostart  %1$s</string>
     <string name="label_week_start_system_default">Systemstandard (%1$s)</string>
+    <string name="label_week_start_gui_summary">Välj systemstandard, måndag eller söndag.</string>
     <string name="label_controls_section">Kontroller</string>
     <string name="label_controls_toggle_read">  1-9  Växla läskalendrar</string>
     <string name="label_controls_set_write">  w    Välj skrivkalender</string>

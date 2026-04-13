@@ -26,6 +26,10 @@
     <string name="label_missing">Fehlt</string>
     <string name="label_permissions">Berechtigungen</string>
     <string name="label_settings">Einstellungen</string>
+    <string name="label_dark_mode">Dunkler Modus</string>
+    <string name="label_dark_mode_summary">Schwarzen Hintergrund mit weisser Schrift verwenden.</string>
+    <string name="label_epaper_refresh">E-Paper-Aktualisierung</string>
+    <string name="label_epaper_refresh_summary">Bildschirm beim Ansichtswechsel kurz blinken lassen, um Ghosting zu reduzieren.</string>
     <string name="label_calendar">Kalender</string>
     <string name="label_title">Titel</string>
     <string name="label_start_date">Startdatum</string>

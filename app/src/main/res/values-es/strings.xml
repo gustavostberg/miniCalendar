@@ -26,6 +26,10 @@
     <string name="label_missing">Falta</string>
     <string name="label_permissions">Permisos</string>
     <string name="label_settings">Ajustes</string>
+    <string name="label_dark_mode">Modo oscuro</string>
+    <string name="label_dark_mode_summary">Usar fondo negro con texto blanco.</string>
+    <string name="label_epaper_refresh">Actualización de e-paper</string>
+    <string name="label_epaper_refresh_summary">Parpadear la pantalla al cambiar de vista para reducir el ghosting.</string>
     <string name="label_calendar">Calendario</string>
     <string name="label_title">Título</string>
     <string name="label_start_date">Fecha de inicio</string>

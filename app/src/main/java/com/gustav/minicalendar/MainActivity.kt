@@ -17,16 +17,23 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ArrayAdapter
+import android.widget.AdapterView
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
+import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.widget.SwitchCompat
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.res.ResourcesCompat
 import android.app.TimePickerDialog
 import android.app.DatePickerDialog
 import java.text.DateFormatSymbols
@@ -34,6 +41,7 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.ArrayDeque
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
@@ -54,6 +62,8 @@ class MainActivity : AppCompatActivity() {
     private var monthCanvas: MonthCanvasView? = null
     private var weekCanvas: WeekCanvasView? = null
     private var dayCanvas: DayListCanvasView? = null
+    private var settingsScrollView: ScrollView? = null
+    private var settingsContent: LinearLayout? = null
 
     private var bodyCols: Int = 42
     private var writeCalendarId: Long? = null
@@ -68,10 +78,13 @@ class MainActivity : AppCompatActivity() {
     }
     private var screen: Screen = Screen.MONTH
     private var previousScreen: Screen = Screen.MONTH
+    private val screenHistory = ArrayDeque<Screen>()
+    private var lastRenderedScreenForDarkRefresh: Screen? = null
+    private var epaperRefreshOverlay: View? = null
     private var selectedEvent: CalendarRepository.Event? = null
     private var eventDeletePending: Boolean = false
     private var recurringDeleteMenuPending: Boolean = false
-    private var lastKey: String = "—"
+    private var lastKey: String = "ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â"
     private var selectedSlot: Int? = null
     private var numberBuffer: String = ""
     private var selectedDay: Calendar = Calendar.getInstance()
@@ -115,7 +128,7 @@ class MainActivity : AppCompatActivity() {
     private val dateFmt = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
     private val dow1Fmt get() = SimpleDateFormat("EEE", locale())
 
-    // CalendarRepository — initialised after permission granted
+    // CalendarRepository ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â initialised after permission granted
     private var repo: CalendarRepository? = null
     private var enabledCalendarIds: MutableSet<Long> = mutableSetOf()
 
@@ -187,6 +200,7 @@ class MainActivity : AppCompatActivity() {
         if (!shouldOpenFocusDay) return
         if (!hasCalendarPermissions()) return
         if (repo == null) initRepo()
+        screenHistory.clear()
 
         val focusDayMillis = srcIntent.getLongExtra(EXTRA_FOCUS_DAY_MILLIS, -1L)
         if (focusDayMillis <= 0L) {
@@ -220,6 +234,7 @@ class MainActivity : AppCompatActivity() {
         if (!shouldOpenCaptureDay) return
         if (!hasCalendarPermissions()) return
         if (repo == null) initRepo()
+        screenHistory.clear()
 
         val focusDayMillis = srcIntent.getLongExtra(EXTRA_FOCUS_DAY_MILLIS, -1L)
         if (focusDayMillis <= 0L) {
@@ -254,6 +269,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openEventFromNotification(eventId: Long, eventStart: Long) {
+        screenHistory.clear()
         val targetDay = Calendar.getInstance().apply {
             timeInMillis = eventStart
             set(Calendar.HOUR_OF_DAY, 0)
@@ -315,6 +331,12 @@ class MainActivity : AppCompatActivity() {
         } else {
             requestCalendarPermissions()
         }
+
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                handleBackNavigation(fromSystem = true)
+            }
+        })
 
         render()
 
@@ -398,15 +420,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private val prefs by lazy { getSharedPreferences("minicalendar", MODE_PRIVATE) }
+    private val uiRegularTypeface by lazy {
+        ResourcesCompat.getFont(this, R.font.work_sans_regular) ?: Typeface.SANS_SERIF
+    }
+    private val uiMediumTypeface by lazy {
+        ResourcesCompat.getFont(this, R.font.work_sans_medium) ?: uiRegularTypeface
+    }
     private val weekStartPreferenceOptions = listOf(
         0,
-        Calendar.SUNDAY,
         Calendar.MONDAY,
-        Calendar.TUESDAY,
-        Calendar.WEDNESDAY,
-        Calendar.THURSDAY,
-        Calendar.FRIDAY,
-        Calendar.SATURDAY
+        Calendar.SUNDAY
     )
 
     private val alarmFallbackOptions = listOf(0, 5, 10, 15, 30, 60)
@@ -420,6 +443,110 @@ class MainActivity : AppCompatActivity() {
     private fun configuredWeekStartPreference(): Int =
         prefs.getInt("week_start_day", 0)
 
+    private fun setWeekStartPreference(dayOfWeek: Int) {
+        val normalized = if (dayOfWeek in weekStartPreferenceOptions) dayOfWeek else 0
+        prefs.edit().putInt("week_start_day", normalized).apply()
+    }
+
+    private fun darkModeEnabled(): Boolean =
+        prefs.getBoolean("dark_mode_enabled", false)
+
+    private fun setDarkModeEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("dark_mode_enabled", enabled).apply()
+    }
+
+    private fun darkModeEpaperRefreshEnabled(): Boolean =
+        prefs.getBoolean("dark_mode_epaper_refresh_enabled", true)
+
+    private fun setDarkModeEpaperRefreshEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("dark_mode_epaper_refresh_enabled", enabled).apply()
+    }
+
+    private fun appBgColor(): Int = if (darkModeEnabled()) Color.BLACK else Color.WHITE
+    private fun appFgColor(): Int = if (darkModeEnabled()) Color.WHITE else Color.BLACK
+    private fun appSubtleTextColor(): Int = if (darkModeEnabled()) Color.rgb(190, 190, 190) else Color.DKGRAY
+    private fun appPanelColor(): Int = if (darkModeEnabled()) Color.rgb(24, 24, 24) else Color.WHITE
+    private fun appStrokeColor(): Int = if (darkModeEnabled()) Color.rgb(95, 95, 95) else Color.BLACK
+
+    private fun applyAppThemeChrome() {
+        val bg = appBgColor()
+        val fg = appFgColor()
+        findViewById<View>(R.id.root)?.setBackgroundColor(bg)
+        header.setBackgroundColor(bg)
+        header.setTextColor(fg)
+        bodyContainer.setBackgroundColor(bg)
+        body.setBackgroundColor(bg)
+        body.setTextColor(fg)
+        captureInput.setBackgroundColor(bg)
+        captureInput.setTextColor(fg)
+        captureInput.setHintTextColor(appSubtleTextColor())
+    }
+
+    private fun maybeFlashEpaperOnDarkViewChange() {
+        val previous = lastRenderedScreenForDarkRefresh
+        val current = screen
+        lastRenderedScreenForDarkRefresh = current
+        if (!darkModeEnabled() || !darkModeEpaperRefreshEnabled() || previous == null || previous == current) return
+        flashEpaperRefresh()
+    }
+
+    private fun flashEpaperRefresh() {
+        val root = window.decorView as? ViewGroup ?: return
+        epaperRefreshOverlay?.let { old ->
+            runCatching { root.removeView(old) }
+        }
+
+        val overlay = View(this).apply {
+            setBackgroundColor(Color.WHITE)
+            isClickable = false
+        }
+        epaperRefreshOverlay = overlay
+        root.addView(
+            overlay,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        overlay.postDelayed({
+            if (epaperRefreshOverlay !== overlay) return@postDelayed
+            overlay.setBackgroundColor(Color.BLACK)
+            overlay.invalidate()
+            overlay.postDelayed({
+                if (epaperRefreshOverlay !== overlay) return@postDelayed
+                runCatching { root.removeView(overlay) }
+                epaperRefreshOverlay = null
+                root.invalidate()
+                bodyContainer.invalidate()
+                header.invalidate()
+            }, 120L)
+        }, 120L)
+    }
+
+    private fun themedSpinnerAdapter(items: List<String>): ArrayAdapter<String> =
+        object : ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, items) {
+            init {
+                setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            }
+
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
+                styleSpinnerView(super.getView(position, convertView, parent), dropdown = false)
+
+            override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View =
+                styleSpinnerView(super.getDropDownView(position, convertView, parent), dropdown = true)
+        }
+
+    private fun styleSpinnerView(view: View, dropdown: Boolean): View {
+        view.setBackgroundColor(if (dropdown) appPanelColor() else appBgColor())
+        (view as? TextView)?.apply {
+            setTextColor(appFgColor())
+            setHintTextColor(appSubtleTextColor())
+            typeface = uiRegularTypeface
+            textSize = 12f
+        }
+        return view
+    }
+
     private fun resolvedFirstDayOfWeek(): Int {
         val saved = configuredWeekStartPreference()
         return if (saved in Calendar.SUNDAY..Calendar.SATURDAY) saved else localeDefaultFirstDayOfWeek()
@@ -429,7 +556,7 @@ class MainActivity : AppCompatActivity() {
         val current = configuredWeekStartPreference()
         val idx = weekStartPreferenceOptions.indexOf(current).let { if (it >= 0) it else 0 }
         val next = weekStartPreferenceOptions[(idx + 1) % weekStartPreferenceOptions.size]
-        prefs.edit().putInt("week_start_day", next).apply()
+        setWeekStartPreference(next)
     }
 
     private fun localizedWeekdayName(dayOfWeek: Int): String {
@@ -468,6 +595,17 @@ class MainActivity : AppCompatActivity() {
         setAlarmEngineEnabled(!alarmEngineEnabled())
     }
 
+    private fun setWriteCalendar(calendarId: Long?) {
+        writeCalendarId = calendarId
+        val editor = prefs.edit()
+        if (calendarId != null) {
+            editor.putLong("write_calendar_id", calendarId)
+        } else {
+            editor.remove("write_calendar_id")
+        }
+        editor.apply()
+    }
+
     private fun alarmFallbackMinutes(): Int {
         val saved = prefs.getInt("alarm_engine_fallback_minutes", 10)
         return if (saved in alarmFallbackOptions) saved else 10
@@ -480,9 +618,18 @@ class MainActivity : AppCompatActivity() {
         prefs.edit().putInt("alarm_engine_fallback_minutes", next).apply()
     }
 
+    private fun setAlarmFallbackMinutes(minutes: Int) {
+        val normalized = if (minutes in alarmFallbackOptions) minutes else alarmFallbackOptions.first()
+        prefs.edit().putInt("alarm_engine_fallback_minutes", normalized).apply()
+    }
+
     private fun alarmFallbackLabel(): String =
         if (alarmFallbackMinutes() == 0) getString(R.string.label_at_time_of_event)
         else getString(R.string.label_minutes_before, alarmFallbackMinutes())
+
+    private fun alarmFallbackOptionLabel(minutes: Int): String =
+        if (minutes == 0) getString(R.string.label_at_time_of_event)
+        else getString(R.string.label_minutes_before, minutes)
 
 
     private fun initRepo() {
@@ -538,7 +685,7 @@ class MainActivity : AppCompatActivity() {
             val localDayEndMs   = localDayStartMs + 86_400_000L
             for (ev in weekEvs) {
                 val overlaps = if (ev.isAllDay) {
-                    // Compare UTC day epochs directly — all-day events are stored as UTC midnight
+                    // Compare UTC day epochs directly ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â all-day events are stored as UTC midnight
                     val evStartEpoch = ev.startMillis / 86_400_000L
                     val evEndEpoch   = (ev.endMillis - 1) / 86_400_000L
                     // Use noon local time to get correct UTC day index (noon trick)
@@ -556,7 +703,7 @@ class MainActivity : AppCompatActivity() {
         }
         cachedWeekEvents = (0..6).associateWith { map[it]?.toList().orEmpty() }
 
-        // Month window — always fetch the whole visible month grid:
+        // Month window ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â always fetch the whole visible month grid:
         // Monday of the first visible week through Monday after the last visible week.
         val firstOfMonth = (selectedDay.clone() as Calendar).apply {
             set(Calendar.DAY_OF_MONTH, 1)
@@ -623,7 +770,7 @@ class MainActivity : AppCompatActivity() {
         android.util.Log.i(tag, "================================")
     }
 
-    // ── Capture helpers ───────────────────────────────────────────────────────
+    // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ Capture helpers ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
 
     private fun locale(): Locale =
         resources.configuration.locales[0] ?: Locale.getDefault()
@@ -803,7 +950,7 @@ class MainActivity : AppCompatActivity() {
             true
         ).show()
     }
-    private fun showDatePickerForField(field: EditText) {
+    private fun showDatePickerForField(field: EditText, onPicked: (() -> Unit)? = null) {
         val parsed = parseYYMMDD(field.text?.toString().orEmpty()) ?: selectedDay
         val year = parsed.get(Calendar.YEAR)
         val month = parsed.get(Calendar.MONTH)
@@ -814,6 +961,7 @@ class MainActivity : AppCompatActivity() {
             { _, pickedYear, pickedMonth, pickedDay ->
                 val yy = pickedYear % 100
                 field.setText(String.format(Locale.US, "%02d%02d%02d", yy, pickedMonth + 1, pickedDay))
+                onPicked?.invoke()
             },
             year,
             month,
@@ -943,9 +1091,8 @@ class MainActivity : AppCompatActivity() {
                 return true
             }
 
-            screen = Screen.EVENT
+            navigateToScreen(Screen.EVENT, "open event")
             clearDeleteState()
-            lastKey = "open event"
             render()
             return true
         }
@@ -982,9 +1129,7 @@ class MainActivity : AppCompatActivity() {
                         Toast.makeText(this, getString(R.string.toast_delete_failed), Toast.LENGTH_SHORT).show()
                     }
                     selectedEvent = null
-                    clearDeleteState()
-                    screen = previousScreen
-                    render()
+                    returnToPreviousScreen("delete recurring")
                 }
                 return true
             }
@@ -1113,7 +1258,7 @@ class MainActivity : AppCompatActivity() {
 
             's' -> {
                 selectedDay.add(Calendar.DAY_OF_MONTH, -1)
-                selectedSlot = null        // ← istället för clearSelection()
+                selectedSlot = null        // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â Ãƒâ€šÃ‚Â istÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¤llet fÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¶r clearSelection()
                 //clearSelection()
                 reloadEvents()
                 lastKey = "s (day -1)"
@@ -1175,9 +1320,7 @@ class MainActivity : AppCompatActivity() {
                             }
                         }
                         selectedEvent = null
-                        clearDeleteState()
-                        screen = previousScreen
-                        render()
+                        returnToPreviousScreen("delete event")
                     }
                     screen == Screen.EVENT -> {
                         val ev = selectedEvent
@@ -1233,7 +1376,7 @@ class MainActivity : AppCompatActivity() {
             // Paging within week/day/settings view
             'p' -> {
                 if (screen == Screen.SETTINGS) {
-                    settingsPageOffset++
+                    scrollSettingsPage(1)
                     lastKey = "p (settings page down)"
                 } else {
                     pageOffset++
@@ -1243,7 +1386,7 @@ class MainActivity : AppCompatActivity() {
             }
             'o' -> {
                 if (screen == Screen.SETTINGS) {
-                    if (settingsPageOffset > 0) settingsPageOffset--
+                    scrollSettingsPage(-1)
                     lastKey = "o (settings page up)"
                 } else {
                     if (pageOffset > 0) pageOffset--
@@ -1262,13 +1405,7 @@ class MainActivity : AppCompatActivity() {
 
 
             'b' -> {
-                val wasEvent = screen == Screen.EVENT
-                screen = previousScreen
-                selectedSlot = null
-                clearDeleteState()
-                lastKey = "b (back)"
-                if (wasEvent) reloadEvents()
-                render()
+                handleBackNavigation(fromSystem = false)
             }
         }
 
@@ -1292,13 +1429,56 @@ class MainActivity : AppCompatActivity() {
         render()
     }
 
-    private fun goTo(s: Screen, note: String) {
+    private fun navigateToScreen(target: Screen, note: String, pushCurrent: Boolean = true) {
+        if (pushCurrent && screen != target) {
+            screenHistory.addLast(screen)
+        }
         previousScreen = screen
-        screen = s
+        screen = target
         selectedSlot = null
         numberBuffer = ""
-        if (s != Screen.SETTINGS) settingsPageOffset = 0
+        if (target != Screen.SETTINGS) settingsPageOffset = 0
         lastKey = note
+    }
+
+    private fun popPreviousScreenOrFallback(): Screen {
+        val target = if (screenHistory.isNotEmpty()) screenHistory.removeLast() else previousScreen
+        previousScreen = if (screenHistory.isNotEmpty()) screenHistory.last() else target
+        return target
+    }
+
+    private fun returnToPreviousScreen(note: String, reloadAfter: Boolean = false) {
+        screen = popPreviousScreenOrFallback()
+        selectedSlot = null
+        clearDeleteState()
+        numberBuffer = ""
+        lastKey = note
+        if (reloadAfter) reloadEvents()
+        render()
+    }
+
+    private fun handleBackNavigation(fromSystem: Boolean) {
+        if (screenHistory.isEmpty()) {
+            if (fromSystem) {
+                finish()
+            } else {
+                selectedSlot = null
+                clearDeleteState()
+                lastKey = "b (back)"
+                render()
+            }
+            return
+        }
+
+        val wasEvent = screen == Screen.EVENT
+        returnToPreviousScreen(
+            note = if (fromSystem) "system back" else "b (back)",
+            reloadAfter = wasEvent
+        )
+    }
+
+    private fun goTo(s: Screen, note: String) {
+        navigateToScreen(s, note)
         reloadEvents()
         render()
     }
@@ -1341,13 +1521,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderMissingPermissionsView() {
+        applyAppThemeChrome()
         header.text = getString(R.string.label_permissions)
         monthCanvas?.visibility = View.GONE
         weekCanvas?.visibility = View.GONE
         dayCanvas?.visibility = View.GONE
+        settingsScrollView?.visibility = View.GONE
         body.visibility = View.VISIBLE
         body.requestFocus()
-        body.setBackgroundColor(Color.WHITE)
         body.textSize = 14f
         body.text = buildString {
             appendLine(getString(R.string.label_calendar_access_required))
@@ -1362,7 +1543,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun render() {
-        if (!hasCalendarPermissions()) {
+        applyAppThemeChrome()
+        if (!hasCalendarPermissions() && screen != Screen.SETTINGS) {
             renderMissingPermissionsView()
             return
         }
@@ -1382,7 +1564,7 @@ class MainActivity : AppCompatActivity() {
             header.text = when (screen) {
                 Screen.WEEK     -> {
                     val wf = java.text.SimpleDateFormat("MMM yyyy", locale())
-                    "${getString(R.string.label_week_number, weekNum)} · ${wf.format(selectedDay.time)}"
+                    "${getString(R.string.label_week_number, weekNum)} - ${wf.format(selectedDay.time)}"
                 }
                 Screen.SETTINGS -> getString(R.string.label_settings)
                 else            -> screen.name.lowercase()
@@ -1392,6 +1574,7 @@ class MainActivity : AppCompatActivity() {
 
         if (screen == Screen.MONTH) {
             body.visibility = View.GONE
+            settingsScrollView?.visibility = View.GONE
             weekCanvas?.visibility = View.GONE
             dayCanvas?.visibility = View.GONE
             if (monthCanvas == null) {
@@ -1403,17 +1586,17 @@ class MainActivity : AppCompatActivity() {
             }
             monthCanvas!!.visibility = View.VISIBLE
             monthCanvas!!.requestFocus()
-            monthCanvas!!.update(selectedDay, cachedMonthEvents, showFooter, resolvedFirstDayOfWeek())
+            monthCanvas!!.update(selectedDay, cachedMonthEvents, showFooter, resolvedFirstDayOfWeek(), darkModeEnabled())
             monthCanvas!!.setOnDayClick { day ->
                 selectedDay = day
-                previousScreen = Screen.MONTH
-                screen = Screen.WEEK
+                navigateToScreen(Screen.WEEK, "tap day -> week")
                 pageOffset = 0
                 reloadEvents()
                 render()
             }
         } else if (screen == Screen.WEEK) {
             body.visibility = View.GONE
+            settingsScrollView?.visibility = View.GONE
             monthCanvas?.visibility = View.GONE
             dayCanvas?.visibility = View.GONE
             if (weekCanvas == null) {
@@ -1425,25 +1608,24 @@ class MainActivity : AppCompatActivity() {
             }
             weekCanvas!!.visibility = View.VISIBLE
             weekCanvas!!.requestFocus()
-            weekCanvas!!.update(selectedDay, cachedWeekEvents, repo != null, pageOffset, showFooter, resolvedFirstDayOfWeek())
+            weekCanvas!!.update(selectedDay, cachedWeekEvents, repo != null, pageOffset, showFooter, resolvedFirstDayOfWeek(), darkModeEnabled())
             weekCanvas!!.onEventClick = { event ->
                 selectedEvent = event
                 clearDeleteState()
-                previousScreen = screen
-                screen = Screen.EVENT
+                navigateToScreen(Screen.EVENT, "tap event")
                 render()
             }
             weekCanvas!!.onDayTap = { day ->
                 selectedDay = day
                 selectedEvent = null
                 clearDeleteState()
-                previousScreen = Screen.WEEK
-                screen = Screen.FOCUS
+                navigateToScreen(Screen.FOCUS, "tap day -> focus")
                 pageOffset = 0
                 render()
             }
         } else if (screen == Screen.FOCUS) {
             body.visibility = View.GONE
+            settingsScrollView?.visibility = View.GONE
             monthCanvas?.visibility = View.GONE
             weekCanvas?.visibility = View.GONE
             if (dayCanvas == null) {
@@ -1455,7 +1637,7 @@ class MainActivity : AppCompatActivity() {
             }
             dayCanvas!!.visibility = View.VISIBLE
             dayCanvas!!.requestFocus()
-            dayCanvas!!.update(selectedDay, getFocusEventsForSelectedDay(), calendarMap, showFooter, pageOffset)
+            dayCanvas!!.update(selectedDay, getFocusEventsForSelectedDay(), calendarMap, showFooter, pageOffset, darkModeEnabled())
             val dayFmt = java.text.SimpleDateFormat("EEE d MMM", locale())
             val focusHeader = dayFmt.format(selectedDay.time).replaceFirstChar { it.uppercaseChar() }
             val pageInfo = dayCanvas!!.headerPageIndicator()
@@ -1463,22 +1645,28 @@ class MainActivity : AppCompatActivity() {
             dayCanvas!!.onEventClick = { event ->
                 selectedEvent = event
                 clearDeleteState()
-                previousScreen = screen
-                screen = Screen.EVENT
+                navigateToScreen(Screen.EVENT, "tap event")
                 render()
             }
+        } else if (screen == Screen.SETTINGS) {
+            monthCanvas?.visibility = View.GONE
+            weekCanvas?.visibility = View.GONE
+            dayCanvas?.visibility = View.GONE
+            body.visibility = View.GONE
+            renderSettingsPanel()
+            settingsScrollView?.visibility = View.VISIBLE
+            settingsScrollView?.requestFocus()
         } else {
             monthCanvas?.visibility = View.GONE
             weekCanvas?.visibility = View.GONE
             dayCanvas?.visibility = View.GONE
+            settingsScrollView?.visibility = View.GONE
             body.visibility = View.VISIBLE
             body.requestFocus()
-            // Anpassa utseende per skärm
+            // Anpassa utseende per skÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¤rm
             if (screen == Screen.FOCUS||screen == Screen.SETTINGS) {
-                body.setBackgroundColor(Color.WHITE)
-                body.textSize = 14f   // justera efter smak, default är ~14f
+                body.textSize = 14f   // justera efter smak, default ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¤r ~14f
             } else {
-                body.setBackgroundColor(Color.WHITE)
                 body.textSize = 14f
             }
             val raw = buildString {
@@ -1505,6 +1693,7 @@ class MainActivity : AppCompatActivity() {
             }
             body.text = raw
         }
+        maybeFlashEpaperOnDarkViewChange()
 
     }
 
@@ -1610,8 +1799,8 @@ class MainActivity : AppCompatActivity() {
         val (minHour, maxHourExclusive) = computeHourWindow(timedByDay)
 
         // Build a sequence of "slots" to render:
-        //  - active hours (have events overlapping) → rendered normally
-        //  - runs of empty hours → collapsed to a single gap row
+        //  - active hours (have events overlapping) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ rendered normally
+        //  - runs of empty hours ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ collapsed to a single gap row
 
         val slots = mutableListOf<WeekSlot>()
         val hourHasEvents: (Int) -> Boolean = { h ->
@@ -1685,11 +1874,11 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 is WeekSlot.Gap -> {
-                    // Single collapsed row: "08–13" in time column, blank day columns
+                    // Single collapsed row: "08-13" in time column, blank day columns
                     val label = if (slot.from == slot.to)
                         formatMinute(slot.from * 60).trimEnd()
                     else
-                        "${slot.from.toString().padStart(2,'0')}–${slot.to.toString().padStart(2,'0')}"
+                        "${slot.from.toString().padStart(2,'0')}-${slot.to.toString().padStart(2,'0')}"
 
                     val line = buildString {
                         append(label.padEnd(timeColW))
@@ -1733,7 +1922,7 @@ class MainActivity : AppCompatActivity() {
 
         val calName = calendarMap[ev.calendarId]?.name
         if (calName != null) {
-            out.appendLine("📅 $calName")
+            out.appendLine("ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ $calName")
             out.appendLine()
         }
 
@@ -1741,31 +1930,31 @@ class MainActivity : AppCompatActivity() {
             val startCal = Calendar.getInstance().apply { timeInMillis = ev.startMillis }
             val endCal   = Calendar.getInstance().apply { timeInMillis = ev.endMillis - 1 }
             if (ev.startDayEpoch == ev.endDayEpoch) {
-                out.appendLine("${getString(R.string.label_all_day)} · ${dateFmtFull.format(startCal.time)}")
+                out.appendLine("${getString(R.string.label_all_day)} ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· ${dateFmtFull.format(startCal.time)}")
             } else {
                 out.appendLine(getString(R.string.label_all_day))
                 out.appendLine("  ${dateFmtFull.format(startCal.time)}")
-                out.appendLine("→ ${dateFmtFull.format(endCal.time)}")
+                out.appendLine("ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ ${dateFmtFull.format(endCal.time)}")
             }
         } else {
             val startCal = Calendar.getInstance().apply { timeInMillis = ev.startMillis }
             out.appendLine(
-                "${timeFmt.format(java.util.Date(ev.startMillis))}–${timeFmt.format(java.util.Date(ev.endMillis))}" +
-                        "  ·  ${dateFmtFull.format(startCal.time)}"
+                "${timeFmt.format(java.util.Date(ev.startMillis))}ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ${timeFmt.format(java.util.Date(ev.endMillis))}" +
+                        "  ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·  ${dateFmtFull.format(startCal.time)}"
             )
         }
 
         if (ev.location.isNotBlank()) {
             out.appendLine()
-            out.appendLine("📍 ${ev.location}")
+            out.appendLine("ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒâ€šÃ‚Â ${ev.location}")
         }
         if (!ev.rrule.isNullOrBlank()) {
             out.appendLine()
-            out.appendLine("↻ ${rruleToRepeatLabel(ev.rrule)}")
+            out.appendLine("ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â Ãƒâ€šÃ‚Â» ${rruleToRepeatLabel(ev.rrule)}")
         }
         if (ev.reminderMinutes != null) {
             out.appendLine()
-            out.appendLine("⏰ ${minutesToReminderLabel(ev.reminderMinutes, ev.isAllDay)}")
+            out.appendLine("ÃƒÆ’Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒâ€šÃ‚Â° ${minutesToReminderLabel(ev.reminderMinutes, ev.isAllDay)}")
         }
 
         if (ev.description.isNotBlank()) {
@@ -1776,14 +1965,14 @@ class MainActivity : AppCompatActivity() {
         val attendees = repo?.getAttendees(ev.id).orEmpty()
         if (attendees.isNotEmpty()) {
             out.appendLine()
-            out.appendLine("👥 ${getString(R.string.label_attendees_count, attendees.size)}")
+            out.appendLine("ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã‹Å“Ãƒâ€šÃ‚Â¥ ${getString(R.string.label_attendees_count, attendees.size)}")
             for (a in attendees) {
                 out.appendLine("  ${a.statusLabel} ${a.displayName}")
             }
         }
 
         out.appendLine()
-        out.appendLine("─".repeat(bodyCols.coerceAtLeast(20)))
+        out.appendLine("ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬".repeat(bodyCols.coerceAtLeast(20)))
 
         when {
             recurringDeleteMenuPending -> {
@@ -1809,7 +1998,7 @@ class MainActivity : AppCompatActivity() {
     // MONTH VIEW rendering
     // -----------------------
 
-    // renderMonthView removed — replaced by MonthCanvasView
+    // renderMonthView removed ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â replaced by MonthCanvasView
 
 
     private fun getFocusEventsForSelectedDay(): List<CalendarRepository.Event> {
@@ -1926,7 +2115,7 @@ class MainActivity : AppCompatActivity() {
                     durationMin % 60 == 0 -> "  (${durationMin/60}h)"
                     else -> "  (${durationMin/60}h${durationMin%60}min)"
                 }
-                contentLines.add("$start–$end  ${ev.title}$durationStr")
+                contentLines.add("$start-$end  ${ev.title}$durationStr")
             }
         }
 
@@ -1986,24 +2175,24 @@ class MainActivity : AppCompatActivity() {
 
         // All-day singles (day numbers relative to current month)
         addSingle("Ruben de",          cal(23))
-        addSingle("Pappa födelsedag",  cal(29))
+        addSingle("Pappa fÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¶delsedag",  cal(29))
         // Multi-day spanning two weeks
         addSpan("Utvecklingsinit",     cal(18), cal(21))
         addSpan("Konferens Berlin",    cal(25), cal(31))
         // Timed single-day
-        addSingle("Möte gustav",       cal(25), 9, 30, 9, 55)
-        addSingle("Frank klättring",   cal(29), 13, 0, 15, 0)
+        addSingle("MÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¶te gustav",       cal(25), 9, 30, 9, 55)
+        addSingle("Frank klÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¤ttring",   cal(29), 13, 0, 15, 0)
         addSingle("Middag Hedvig",     cal(27), 18, 0, 19, 0)
         addSingle("Randi gympa",       cal(24), 20, 0, 20, 30)
         addSingle("komponentkoll",     cal(24), 13, 0, 14, 0)
         addSingle("Nira Control",      cal(25), 10, 0, 11, 0)
-        addSingle("Johan födelsedag",  cal(25), 20, 0, 21, 0)
+        addSingle("Johan fÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¶delsedag",  cal(25), 20, 0, 21, 0)
         // Overflow test: lots of events same day
-        addSingle("Möte A",  cal(26), 9, 0, 10, 0)
-        addSingle("Möte B",  cal(26), 11, 0, 12, 0)
-        addSingle("Möte C",  cal(26), 14, 0, 15, 0)
-        addSingle("Möte D",  cal(26), 16, 0, 17, 0)
-        addSingle("Möte E",  cal(26), 18, 0, 19, 0)
+        addSingle("MÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¶te A",  cal(26), 9, 0, 10, 0)
+        addSingle("MÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¶te B",  cal(26), 11, 0, 12, 0)
+        addSingle("MÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¶te C",  cal(26), 14, 0, 15, 0)
+        addSingle("MÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¶te D",  cal(26), 16, 0, 17, 0)
+        addSingle("MÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¶te E",  cal(26), 18, 0, 19, 0)
 
         return list
     }
@@ -2073,7 +2262,7 @@ class MainActivity : AppCompatActivity() {
             } else {
                 // Continuation from previous hour
                 if (emitContinuation) {
-                    val marker = if (endsThisHour) "│ $endTxt" else "│"
+                    val marker = if (endsThisHour) "ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ $endTxt" else "ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡"
                     linesOut.add(marker.padEnd(colWidth).take(colWidth))
                 }
             }
@@ -2192,20 +2381,20 @@ class MainActivity : AppCompatActivity() {
 
         addAllDay(0, "Ruben de")
         addAllDay(3, "Utvecklingsinit")
-        addAllDay(5, "Pappa födelsedag")
+        addAllDay(5, "Pappa fÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¶delsedag")
 
         addTimed(1, "skriv ut schema s900+ mb", 9, 0, 10, 50)
-        addTimed(3, "Möte gustav ös-", 9, 30, 9, 55)   // non-hour start
+        addTimed(3, "MÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¶te gustav ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¶s-", 9, 30, 9, 55)   // non-hour start
         addTimed(3, "Nira Control", 10, 0, 11, 0)
 
         addTimed(1, "komponentkoll johan hakan", 13, 0, 14, 0)
-        addTimed(5, "Frank klättring", 13, 0, 15, 0)
+        addTimed(5, "Frank klÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¤ttring", 13, 0, 15, 0)
 
         addTimed(4, "Middag Hedvig och Ninja", 18, 0, 19, 0)
 
-        addTimed(1, "Randi gympakläder", 20, 0, 20, 30)
-        addTimed(3, "Johan födelsedag", 20, 0, 21, 0)
-        addTimed(5, "Pappa födelsedag", 20, 0, 21, 0)
+        addTimed(1, "Randi gympaklÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¤der", 20, 0, 20, 30)
+        addTimed(3, "Johan fÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¶delsedag", 20, 0, 21, 0)
+        addTimed(5, "Pappa fÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¶delsedag", 20, 0, 21, 0)
 
         return (0..6).associateWith { idx -> map[idx]?.toList().orEmpty() }
     }
@@ -2214,7 +2403,7 @@ class MainActivity : AppCompatActivity() {
     // Text layout helpers
     // -----------------------
 
-    // ── Capture UI helpers ────────────────────────────────────────────────────
+    // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ Capture UI helpers ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
 
     private fun showCaptureInput(prefill: String) {
         screen = if (captureIsAllDay) Screen.CAPTURE_ALLDAY else Screen.CAPTURE_TIMED
@@ -2275,7 +2464,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ── Capture: AlertDialog ─────────────────────────────────────────────────
+    // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ Capture: AlertDialog ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
 
     private fun showCaptureDialog(
         isAllDay: Boolean,
@@ -2294,14 +2483,21 @@ class MainActivity : AppCompatActivity() {
             isAllDay -> getString(R.string.label_new_all_day_event)
             else -> getString(R.string.label_new_timed_event)
         }
+        val fg = appFgColor()
+        val bg = appBgColor()
+        val subtle = appSubtleTextColor()
+        val panel = appPanelColor()
+        val stroke = appStrokeColor()
 
         val content = android.widget.ScrollView(this).apply {
             isFillViewport = true
+            setBackgroundColor(bg)
         }
 
         val form = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(24, 14, 24, 10)
+            setBackgroundColor(bg)
         }
         content.addView(
             form,
@@ -2314,8 +2510,8 @@ class MainActivity : AppCompatActivity() {
         fun labelView(label: String): TextView = TextView(this).apply {
             text = label
             textSize = 11f
-            setTextColor(Color.BLACK)
-            typeface = Typeface.MONOSPACE
+            setTextColor(fg)
+            typeface = uiMediumTypeface
         }
 
         fun newField(value: String, hint: String = "", multiLine: Boolean = false, lines: Int = 1): EditText {
@@ -2329,9 +2525,14 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     InputType.TYPE_CLASS_TEXT
                 }
-                typeface = Typeface.MONOSPACE
+                typeface = uiRegularTypeface
                 textSize = 12f
+                setTextColor(fg)
+                setHintTextColor(subtle)
                 setPadding(16, 8, 16, 8)
+                if (darkModeEnabled()) {
+                    backgroundTintList = android.content.res.ColorStateList.valueOf(stroke)
+                }
                 if (multiLine) {
                     minLines = lines
                     maxLines = lines
@@ -2416,10 +2617,8 @@ class MainActivity : AppCompatActivity() {
 
         form.addView(labelView(getString(R.string.label_calendar)))
         val calendarSpinner = Spinner(this)
-        val calendarLabels = calendars.map { "${it.name} — ${it.accountName}" }
-        calendarSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, calendarLabels).also {
-            it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-        }
+        val calendarLabels = calendars.map { "${it.name} - ${it.accountName}" }
+        calendarSpinner.adapter = themedSpinnerAdapter(calendarLabels)
         val targetCalendarId = prefill.calendarId ?: writeCalendarId ?: calendars.first().id
         val selectedCalendarIndex = calendars.indexOfFirst { it.id == targetCalendarId }.let { if (it >= 0) it else 0 }
         calendarSpinner.setSelection(selectedCalendarIndex)
@@ -2451,11 +2650,21 @@ class MainActivity : AppCompatActivity() {
             field.keyListener = null
         }
 
+        var endDateAutoFromStart = true
         startDateField.setOnClickListener {
-            showDatePickerForField(startDateField)
+            showDatePickerForField(startDateField) {
+                val startText = startDateField.text?.toString().orEmpty()
+                val startDate = parseYYMMDD(startText)
+                val endDate = parseYYMMDD(endDateField.text?.toString().orEmpty())
+                if (endDateAutoFromStart || (startDate != null && endDate != null && endDate.timeInMillis < startDate.timeInMillis)) {
+                    endDateField.setText(startText)
+                }
+            }
         }
         endDateField.setOnClickListener {
-            showDatePickerForField(endDateField)
+            showDatePickerForField(endDateField) {
+                endDateAutoFromStart = false
+            }
         }
 
         val startTimeField: EditText?
@@ -2519,18 +2728,18 @@ class MainActivity : AppCompatActivity() {
             fun smallBtn(label: String, onClick: () -> Unit): android.widget.Button {
                 return android.widget.Button(this@MainActivity).apply {
                     text = label
-                    textSize = 11f                    // ↑ från 9f
-                    typeface = Typeface.MONOSPACE
+                    textSize = 11f                    // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã‹Å“ frÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¥n 9f
+                    typeface = uiRegularTypeface
 
                     minWidth = 0
                     minimumWidth = 0
 
-                    minHeight = dpInt(36f)           // ↑ viktigaste: bättre touch-yta
+                    minHeight = dpInt(36f)           // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã‹Å“ viktigaste: bÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¤ttre touch-yta
                     minimumHeight = dpInt(36f)
 
                     setPadding(
                         dpInt(6f),
-                        dpInt(6f),                   // ↑ lite mer vertikal padding
+                        dpInt(6f),                   // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã‹Å“ lite mer vertikal padding
                         dpInt(6f),
                         dpInt(6f)
                     )
@@ -2597,18 +2806,14 @@ class MainActivity : AppCompatActivity() {
 
         val repeatChoices = repeatOptions()
         val repeatSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_item, repeatChoices).also {
-                it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-            }
+            adapter = themedSpinnerAdapter(repeatChoices)
             val repeatIndex = repeatChoices.indexOf(prefill.repeatLabel).let { if (it >= 0) it else 0 }
             setSelection(repeatIndex)
         }
 
         val reminderChoices = reminderOptions(isAllDay)
         val reminderSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_item, reminderChoices).also {
-                it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-            }
+            adapter = themedSpinnerAdapter(reminderChoices)
             val reminderIndex = reminderChoices.indexOf(prefill.reminderLabel).let { if (it >= 0) it else 0 }
             setSelection(reminderIndex)
         }
@@ -2675,7 +2880,7 @@ class MainActivity : AppCompatActivity() {
 
         val addTypedInviteeButton = android.widget.Button(this).apply {
             text = getString(R.string.label_add)
-            typeface = Typeface.MONOSPACE
+            typeface = uiRegularTypeface
             setOnClickListener {
                 appendInviteeEmail(inviteManualField.text?.toString().orEmpty())
             }
@@ -2690,7 +2895,7 @@ class MainActivity : AppCompatActivity() {
 
         val addInviteeButton = android.widget.Button(this).apply {
             text = "+"
-            typeface = Typeface.MONOSPACE
+            typeface = uiMediumTypeface
             textSize = 18f
             minWidth = 0
             minimumWidth = 0
@@ -2720,8 +2925,8 @@ class MainActivity : AppCompatActivity() {
                     TextView(this).apply {
                         text = getString(R.string.label_no_invitees)
                         textSize = 12f
-                        setTextColor(Color.DKGRAY)
-                        typeface = Typeface.MONOSPACE
+                        setTextColor(subtle)
+                        typeface = uiRegularTypeface
                         setPadding(12, 12, 12, 12)
                     },
                     LinearLayout.LayoutParams(
@@ -2737,8 +2942,8 @@ class MainActivity : AppCompatActivity() {
                     orientation = LinearLayout.HORIZONTAL
                     setPadding(12, 8, 12, 8)
                     background = android.graphics.drawable.GradientDrawable().apply {
-                        setColor(Color.WHITE)
-                        setStroke(dpInt(1f), Color.BLACK)
+                        setColor(panel)
+                        setStroke(dpInt(1f), stroke)
                         cornerRadius = dp(8f)
                     }
                 }
@@ -2746,8 +2951,8 @@ class MainActivity : AppCompatActivity() {
                 val chipLabel = TextView(this).apply {
                     text = email
                     textSize = 12f
-                    setTextColor(Color.BLACK)
-                    typeface = Typeface.MONOSPACE
+                    setTextColor(fg)
+                    typeface = uiRegularTypeface
                 }
                 chipRow.addView(
                     chipLabel,
@@ -2756,7 +2961,7 @@ class MainActivity : AppCompatActivity() {
 
                 val removeButton = android.widget.Button(this).apply {
                     text = getString(R.string.label_remove)
-                    typeface = Typeface.MONOSPACE
+                    typeface = uiRegularTypeface
                     textSize = 16f
                     minWidth = 0
                     minimumWidth = 0
@@ -2789,8 +2994,17 @@ class MainActivity : AppCompatActivity() {
         activeInviteesManualField = inviteManualField
         renderInviteeChips()
 
+        val dialogTitleView = TextView(this).apply {
+            text = dlgTitle
+            textSize = 17f
+            setTextColor(fg)
+            typeface = uiMediumTypeface
+            setPadding(dpInt(24f), dpInt(18f), dpInt(24f), dpInt(8f))
+            setBackgroundColor(bg)
+        }
+
         val dialog = android.app.AlertDialog.Builder(this)
-            .setTitle(dlgTitle)
+            .setCustomTitle(dialogTitleView)
             .setView(content)
             .setPositiveButton(getString(R.string.label_save), null)
             .setNegativeButton(getString(R.string.label_cancel), null)
@@ -2803,6 +3017,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         dialog.setOnShowListener {
+            dialog.window?.setBackgroundDrawable(
+                android.graphics.drawable.GradientDrawable().apply {
+                    setColor(bg)
+                    setStroke(dpInt(1f), stroke)
+                }
+            )
+            dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setTextColor(fg)
+            dialog.getButton(android.app.AlertDialog.BUTTON_NEGATIVE).setTextColor(fg)
             dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val selectedCal = calendars.getOrNull(calendarSpinner.selectedItemPosition) ?: calendars.first()
                 val err = saveEventForm(
@@ -2826,8 +3048,7 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this, err, Toast.LENGTH_LONG).show()
                 } else {
                     selectedEvent = null
-                    screen = previousScreen
-                    render()
+                    returnToPreviousScreen("save event")
                     dialog.dismiss()
                 }
             }
@@ -2842,7 +3063,7 @@ class MainActivity : AppCompatActivity() {
         }, 120)
     }
 
-    // ── Settings view ─────────────────────────────────────────────────────────
+    // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ Settings view ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
 
 
     private fun renderSettingsView(out: StringBuilder) {
@@ -2863,7 +3084,15 @@ class MainActivity : AppCompatActivity() {
                         Manifest.permission.POST_NOTIFICATIONS
                     ) == PackageManager.PERMISSION_GRANTED
 
+        val versionLabel =
+            runCatching {
+                @Suppress("DEPRECATION")
+                packageManager.getPackageInfo(packageName, 0).versionName
+            }.getOrNull() ?: "?"
+
         val lines = mutableListOf<String>()
+        add(lines)
+        add(lines, "${getString(R.string.app_name)} $versionLabel")
         add(lines)
         add(lines, getString(R.string.label_permissions_section))
         add(lines, getString(R.string.label_permissions_calendar_status, statusLabel(calendarOk)))
@@ -2881,8 +3110,8 @@ class MainActivity : AppCompatActivity() {
         } else {
             add(lines, getString(R.string.label_calendar_table_header))
             cals.forEachIndexed { i, cal ->
-                val readMark = mark(cal.id in enabledCalendarIds, "•")
-                val writeMark = mark(cal.id == writeCalendarId, "★")
+                val readMark = mark(cal.id in enabledCalendarIds, "ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢")
+                val writeMark = mark(cal.id == writeCalendarId, "ÃƒÆ’Ã‚Â¢Ãƒâ€¹Ã…â€œÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦")
                 val idx = (i + 1).toString().padStart(2)
                 val name = cal.name.ifBlank { getString(R.string.label_unnamed_calendar) }
                 add(lines, "  $idx  $readMark  $writeMark  $name")
@@ -2929,6 +3158,428 @@ class MainActivity : AppCompatActivity() {
             out.appendLine()
             out.appendLine(getString(R.string.label_page_status, settingsPageOffset + 1, totalPages))
         }
+    }
+
+    private fun ensureSettingsPanel() {
+        if (settingsScrollView != null && settingsContent != null) return
+
+        settingsContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpInt(12f), dpInt(12f), dpInt(12f), dpInt(24f))
+        }
+
+        settingsScrollView = ScrollView(this).apply {
+            visibility = View.GONE
+            isFillViewport = true
+            setBackgroundColor(appBgColor())
+            addView(
+                settingsContent,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
+        }
+
+        bodyContainer.addView(
+            settingsScrollView,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+    }
+
+    private fun scrollSettingsPage(direction: Int) {
+        val scroll = settingsScrollView ?: return
+        val step = (bodyContainer.height * 0.85f).toInt().coerceAtLeast(dpInt(80f))
+        scroll.post {
+            scroll.scrollBy(0, step * direction)
+        }
+    }
+
+    private fun renderSettingsPanel() {
+        ensureSettingsPanel()
+        val content = settingsContent ?: return
+        content.removeAllViews()
+        val fg = appFgColor()
+        val bg = appBgColor()
+        val subtle = appSubtleTextColor()
+        val panel = appPanelColor()
+        val stroke = appStrokeColor()
+        settingsScrollView?.setBackgroundColor(bg)
+        content.setBackgroundColor(bg)
+
+        val calendarOk = hasCalendarPermissions()
+        val notificationOk =
+            android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU ||
+                ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+        val exactAlarmOk =
+            android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S ||
+                (getSystemService(Context.ALARM_SERVICE) as AlarmManager).canScheduleExactAlarms()
+        val calendars = if (calendarOk) repo?.getCalendars().orEmpty() else emptyList()
+        val versionLabel =
+            runCatching {
+                @Suppress("DEPRECATION")
+                packageManager.getPackageInfo(packageName, 0).versionName
+            }.getOrNull() ?: "?"
+
+        fun sectionTitle(text: String) {
+            content.addView(
+                TextView(this).apply {
+                    this.text = text
+                    textSize = 14f
+                    setTextColor(fg)
+                    typeface = uiMediumTypeface
+                    setPadding(0, dpInt(8f), 0, dpInt(6f))
+                }
+            )
+        }
+
+        fun bodyText(text: String) {
+            content.addView(
+                TextView(this).apply {
+                    this.text = text
+                    textSize = 12f
+                    setTextColor(subtle)
+                    typeface = uiRegularTypeface
+                    setPadding(dpInt(4f), 0, dpInt(4f), dpInt(8f))
+                }
+            )
+        }
+
+        fun addRow(title: String, subtitle: String? = null, control: View? = null) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(dpInt(10f), dpInt(10f), dpInt(10f), dpInt(10f))
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(panel)
+                    setStroke(dpInt(1f), stroke)
+                    cornerRadius = dp(8f)
+                }
+            }
+
+            val textBox = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+            }
+            textBox.addView(
+                TextView(this).apply {
+                    text = title
+                    textSize = 13f
+                    setTextColor(fg)
+                    typeface = uiMediumTypeface
+                }
+            )
+            if (!subtitle.isNullOrBlank()) {
+                textBox.addView(
+                    TextView(this).apply {
+                        text = subtitle
+                        textSize = 11f
+                        setTextColor(subtle)
+                        typeface = uiRegularTypeface
+                    }
+                )
+            }
+
+            row.addView(
+                textBox,
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            )
+
+            if (control != null) {
+                row.addView(
+                    control,
+                    LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply { marginStart = dpInt(8f) }
+                )
+            }
+
+            content.addView(
+                row,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dpInt(8f) }
+            )
+        }
+
+        sectionTitle(getString(R.string.label_version))
+        addRow(
+            title = getString(R.string.app_name),
+            subtitle = getString(R.string.label_version_value, versionLabel)
+        )
+        addRow(
+            title = getString(R.string.label_dark_mode),
+            subtitle = getString(R.string.label_dark_mode_summary),
+            control = SwitchCompat(this).apply {
+                isChecked = darkModeEnabled()
+                setTextColor(fg)
+                setOnCheckedChangeListener { _, isChecked ->
+                    if (isChecked == darkModeEnabled()) return@setOnCheckedChangeListener
+                    setDarkModeEnabled(isChecked)
+                    applyAppThemeChrome()
+                    monthCanvas?.invalidate()
+                    weekCanvas?.invalidate()
+                    dayCanvas?.invalidate()
+                    render()
+                    if (isChecked && darkModeEpaperRefreshEnabled()) flashEpaperRefresh()
+                }
+            }
+        )
+        if (darkModeEnabled()) {
+            addRow(
+                title = getString(R.string.label_epaper_refresh),
+                subtitle = getString(R.string.label_epaper_refresh_summary),
+                control = SwitchCompat(this).apply {
+                    isChecked = darkModeEpaperRefreshEnabled()
+                    setTextColor(fg)
+                    setOnCheckedChangeListener { _, isChecked ->
+                        if (isChecked == darkModeEpaperRefreshEnabled()) return@setOnCheckedChangeListener
+                        setDarkModeEpaperRefreshEnabled(isChecked)
+                        render()
+                        if (isChecked) flashEpaperRefresh()
+                    }
+                }
+            )
+        }
+
+        sectionTitle(getString(R.string.label_permissions_section))
+        addRow(
+            title = getString(R.string.label_calendar_access),
+            subtitle = if (calendarOk) getString(R.string.label_granted) else getString(R.string.label_required),
+            control = Button(this).apply {
+                text = if (calendarOk) getString(R.string.label_granted) else getString(R.string.label_grant)
+                typeface = uiRegularTypeface
+                setTextColor(fg)
+                isEnabled = !calendarOk
+                setOnClickListener { requestCalendarPermissions() }
+            }
+        )
+        addRow(
+            title = getString(R.string.label_notification_access),
+            subtitle = if (notificationOk) getString(R.string.label_granted) else getString(R.string.label_required),
+            control = Button(this).apply {
+                text = if (notificationOk) getString(R.string.label_granted) else getString(R.string.label_grant)
+                typeface = uiRegularTypeface
+                setTextColor(fg)
+                isEnabled = !notificationOk
+                setOnClickListener { ensureNotificationPermission() }
+            }
+        )
+        addRow(
+            title = getString(R.string.label_exact_alarm_access),
+            subtitle = if (exactAlarmOk) getString(R.string.label_granted) else getString(R.string.label_required),
+            control = Button(this).apply {
+                text = if (exactAlarmOk) getString(R.string.label_granted) else getString(R.string.label_open)
+                typeface = uiRegularTypeface
+                setTextColor(fg)
+                isEnabled = !exactAlarmOk
+                setOnClickListener { ensureExactAlarmAccess() }
+            }
+        )
+
+        sectionTitle(getString(R.string.label_calendars_section))
+        if (calendars.isEmpty()) {
+            bodyText(
+                if (calendarOk) getString(R.string.toast_no_calendars)
+                else getString(R.string.label_calendar_access_required)
+            )
+        } else {
+            bodyText(getString(R.string.label_settings_calendar_hint))
+            calendars.forEach { cal ->
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding(dpInt(10f), dpInt(10f), dpInt(10f), dpInt(10f))
+                    background = android.graphics.drawable.GradientDrawable().apply {
+                        setColor(panel)
+                        setStroke(dpInt(1f), stroke)
+                        cornerRadius = dp(8f)
+                    }
+                }
+
+                val textBox = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                }
+                textBox.addView(
+                    TextView(this).apply {
+                        text = cal.name.ifBlank { getString(R.string.label_unnamed_calendar) }
+                        textSize = 13f
+                        setTextColor(fg)
+                        typeface = uiMediumTypeface
+                    }
+                )
+                textBox.addView(
+                    TextView(this).apply {
+                        text = cal.accountName
+                        textSize = 11f
+                        setTextColor(subtle)
+                        typeface = uiRegularTypeface
+                    }
+                )
+                row.addView(
+                    textBox,
+                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                )
+
+                val controls = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                }
+
+                val readSwitch = SwitchCompat(this).apply {
+                    text = getString(R.string.label_read)
+                    typeface = uiRegularTypeface
+                    setTextColor(fg)
+                    isChecked = cal.id in enabledCalendarIds
+                    setOnCheckedChangeListener { _, isChecked ->
+                        if (isChecked) {
+                            enabledCalendarIds.add(cal.id)
+                            prefs.edit().putBoolean("read_calendar_${cal.id}", true).apply()
+                        } else {
+                            enabledCalendarIds.remove(cal.id)
+                            prefs.edit().putBoolean("read_calendar_${cal.id}", false).apply()
+                            if (writeCalendarId == cal.id) {
+                                setWriteCalendar(enabledCalendarIds.firstOrNull())
+                            }
+                        }
+                        reloadEvents()
+                        AlarmScheduler.scheduleNext(this@MainActivity)
+                        render()
+                    }
+                }
+
+                val writeRadio = RadioButton(this).apply {
+                    text = getString(R.string.label_write)
+                    typeface = uiRegularTypeface
+                    setTextColor(fg)
+                    isChecked = cal.id == writeCalendarId
+                    setOnCheckedChangeListener { _, isChecked ->
+                        if (!isChecked) return@setOnCheckedChangeListener
+                        if (cal.id !in enabledCalendarIds) {
+                            enabledCalendarIds.add(cal.id)
+                            prefs.edit().putBoolean("read_calendar_${cal.id}", true).apply()
+                        }
+                        setWriteCalendar(cal.id)
+                        render()
+                    }
+                }
+
+                controls.addView(readSwitch)
+                controls.addView(writeRadio)
+                row.addView(
+                    controls,
+                    LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply { marginStart = dpInt(8f) }
+                )
+
+                content.addView(
+                    row,
+                    LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply { bottomMargin = dpInt(8f) }
+                )
+            }
+        }
+
+        sectionTitle(getString(R.string.label_alarm_section))
+        addRow(
+            title = getString(R.string.label_alarm_engine),
+            subtitle = getString(
+                R.string.label_alarm_engine_summary,
+                if (alarmEngineEnabled()) getString(R.string.label_yes) else getString(R.string.label_no)
+            ),
+            control = SwitchCompat(this).apply {
+                isChecked = alarmEngineEnabled()
+                setOnCheckedChangeListener { _, isChecked ->
+                    setAlarmEngineEnabled(isChecked)
+                    if (isChecked) {
+                        if (!hasCalendarPermissions()) requestCalendarPermissions()
+                        ensureNotificationPermission()
+                        ensureExactAlarmAccess()
+                        AlarmScheduler.scheduleNext(this@MainActivity)
+                    } else {
+                        AlarmScheduler.cancelAll(this@MainActivity)
+                    }
+                    render()
+                }
+            }
+        )
+
+        val fallbackValues = alarmFallbackOptions.toList()
+        val fallbackLabels = fallbackValues.map { alarmFallbackOptionLabel(it) }
+        val fallbackSpinner = Spinner(this).apply {
+            adapter = themedSpinnerAdapter(fallbackLabels)
+            setSelection(fallbackValues.indexOf(alarmFallbackMinutes()).coerceAtLeast(0), false)
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    val selected = fallbackValues.getOrNull(position) ?: return
+                    if (selected == alarmFallbackMinutes()) return
+                    setAlarmFallbackMinutes(selected)
+                    AlarmScheduler.scheduleNext(this@MainActivity)
+                    render()
+                }
+
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            }
+        }
+        addRow(
+            title = getString(R.string.label_fallback_time),
+            subtitle = getString(R.string.label_fallback_summary),
+            control = fallbackSpinner
+        )
+
+        sectionTitle(getString(R.string.label_week_start))
+        val currentWeekStart = configuredWeekStartPreference()
+        val weekStartGroup = RadioGroup(this).apply {
+            orientation = RadioGroup.VERTICAL
+        }
+        listOf(
+            0 to getString(R.string.label_week_start_system_default, localizedWeekdayName(localeDefaultFirstDayOfWeek())),
+            Calendar.MONDAY to localizedWeekdayName(Calendar.MONDAY),
+            Calendar.SUNDAY to localizedWeekdayName(Calendar.SUNDAY)
+        ).forEachIndexed { index, (value, label) ->
+            val radioId = View.generateViewId()
+            weekStartGroup.addView(
+                RadioButton(this).apply {
+                    id = radioId
+                    text = label
+                    typeface = uiRegularTypeface
+                    setTextColor(fg)
+                    isChecked = currentWeekStart == value
+                    setOnCheckedChangeListener { _, isChecked ->
+                        if (!isChecked) return@setOnCheckedChangeListener
+                        if (configuredWeekStartPreference() == value) return@setOnCheckedChangeListener
+                        setWeekStartPreference(value)
+                        reloadEvents()
+                        pageOffset = 0
+                        render()
+                    }
+                },
+                if (index == 0) {
+                    RadioGroup.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    )
+                } else {
+                    RadioGroup.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply { topMargin = dpInt(2f) }
+                }
+            )
+        }
+        addRow(
+            title = getString(R.string.label_week_start),
+            subtitle = getString(R.string.label_week_start_gui_summary),
+            control = weekStartGroup
+        )
     }
 
 
@@ -3006,12 +3657,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun dpInt(v: Float): Int = dp(v).toInt()
 
-    // ══════════════════════════════════════════════════════════════════════════════
+    // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚Â
 
 
-    // ══════════════════════════════════════════════════════════════════════════════
-    // WeekCanvasView — graphical week grid with spanning event blocks
-    // ══════════════════════════════════════════════════════════════════════════════
+    // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚Â
+    // WeekCanvasView ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â graphical week grid with spanning event blocks
+    // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚Â
     class WeekCanvasView(context: android.content.Context) : View(context) {
 
         private data class DayEventLayout(
@@ -3025,15 +3676,16 @@ class MainActivity : AppCompatActivity() {
 
         private var selectedDay: Calendar = Calendar.getInstance()
         private var byDay: Map<Int, List<CalEvent>> = emptyMap()
-        // Raw repo events per day index — used to look up the real Event on tap
+        // Raw repo events per day index ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â used to look up the real Event on tap
         private var rawEventsByDay: Map<Int, List<CalendarRepository.Event>> = emptyMap()
 
         private var pageOffset: Int = 0
         private var scrollPx: Float = 0f
         private var maxScrollPx: Float = 0f
         private var showFooter: Boolean = true
+        private var darkMode: Boolean = false
 
-        // Hit areas for timed events — rebuilt every onDraw
+        // Hit areas for timed events ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â rebuilt every onDraw
         private data class EventHitArea(val event: CalendarRepository.Event, val rect: RectF)
         private data class EventCardLayout(
             val event: CalendarRepository.Event,
@@ -3059,7 +3711,7 @@ class MainActivity : AppCompatActivity() {
         private val pBg = Paint().apply { color = Color.WHITE }
         private val pLine = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK; strokeWidth = dp(0.6f) }
         private val pWeekend = Paint().apply {
-            color = Color.rgb(251, 251, 251)   // mycket ljus grå
+            color = Color.rgb(251, 251, 251)   // mycket ljus grÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¥
         }
         private val pText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.BLACK
@@ -3077,6 +3729,22 @@ class MainActivity : AppCompatActivity() {
         private val pEvFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.FILL }
         private val pEvStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK; style = Paint.Style.STROKE; strokeWidth = dp(1f) }
 
+        private fun applyPalette() {
+            val bg = if (darkMode) Color.BLACK else Color.WHITE
+            val fg = if (darkMode) Color.WHITE else Color.BLACK
+            val line = if (darkMode) Color.rgb(95, 95, 95) else Color.BLACK
+            val weekend = if (darkMode) Color.rgb(20, 20, 20) else Color.rgb(251, 251, 251)
+            val card = if (darkMode) Color.rgb(28, 28, 28) else Color.WHITE
+            pBg.color = bg
+            pLine.color = line
+            pWeekend.color = weekend
+            pText.color = fg
+            pHeaderText.color = fg
+            pDot.color = fg
+            pEvFill.color = card
+            pEvStroke.color = fg
+        }
+
         // Layout model
         private var days: List<Calendar> = emptyList()
         private var slots: List<WeekSlot> = emptyList()
@@ -3089,9 +3757,11 @@ class MainActivity : AppCompatActivity() {
         private var contentStartY: Float = 0f
         private var contentEndY: Float = 0f
 
-        fun update(sel: Calendar, cachedWeek: Map<Int, List<CalendarRepository.Event>>, repoOk: Boolean, pageOffset: Int, showFooter: Boolean, firstDayOfWeek: Int) {
+        fun update(sel: Calendar, cachedWeek: Map<Int, List<CalendarRepository.Event>>, repoOk: Boolean, pageOffset: Int, showFooter: Boolean, firstDayOfWeek: Int, darkMode: Boolean) {
             selectedDay = sel
             this.firstDayOfWeek = firstDayOfWeek
+            this.darkMode = darkMode
+            applyPalette()
             days = buildWeekDays(sel, firstDayOfWeek)
             rawEventsByDay = cachedWeek
 
@@ -3280,7 +3950,7 @@ class MainActivity : AppCompatActivity() {
                         val label = if (slot.from == slot.to) {
                             formatMinute(slot.from * 60)
                         } else {
-                            "${slot.from.toString().padStart(2,'0')}–${slot.to.toString().padStart(2,'0')}"
+                            "${slot.from.toString().padStart(2,'0')}-${slot.to.toString().padStart(2,'0')}"
                         }
                         canvas.drawText(label, pad, y + textBaselineAdjust, pText)
                         y += gapH
@@ -3367,7 +4037,7 @@ class MainActivity : AppCompatActivity() {
                     canvas.drawRoundRect(rect, dp(6f), dp(6f), pEvFill)
                     canvas.drawRoundRect(rect, dp(6f), dp(6f), pEvStroke)
 
-                    // Register hit area — store scroll-space rect so touch can compare after adjusting for scroll
+                    // Register hit area ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â store scroll-space rect so touch can compare after adjusting for scroll
                     val rawEv = rawEventsByDay[d]?.firstOrNull { it.title == ev.title && it.startMin == ev.startMin }
                     if (rawEv != null) {
                         eventHitAreas.add(EventHitArea(rawEv, RectF(rect)))
@@ -3774,6 +4444,7 @@ class MainActivity : AppCompatActivity() {
         private var calendarMap: Map<Long, CalendarRepository.CalInfo> = emptyMap()
         private var showFooter: Boolean = true
         private var pageOffset: Int = 0
+        private var darkMode: Boolean = false
         private val hitAreas = mutableListOf<EventHitArea>()
 
         private val pBg = Paint().apply { color = Color.WHITE }
@@ -3791,12 +4462,27 @@ class MainActivity : AppCompatActivity() {
         private val pCardFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.FILL }
         private val pCardStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK; style = Paint.Style.STROKE; strokeWidth = dp(1f) }
 
-        fun update(day: Calendar, events: List<CalendarRepository.Event>, calendarMap: Map<Long, CalendarRepository.CalInfo>, showFooter: Boolean, pageOffset: Int) {
+        private fun applyPalette() {
+            val bg = if (darkMode) Color.BLACK else Color.WHITE
+            val fg = if (darkMode) Color.WHITE else Color.BLACK
+            val line = if (darkMode) Color.rgb(95, 95, 95) else Color.BLACK
+            val card = if (darkMode) Color.rgb(28, 28, 28) else Color.WHITE
+            pBg.color = bg
+            pLine.color = line
+            pText.color = fg
+            pTitle.color = fg
+            pCardFill.color = card
+            pCardStroke.color = fg
+        }
+
+        fun update(day: Calendar, events: List<CalendarRepository.Event>, calendarMap: Map<Long, CalendarRepository.CalInfo>, showFooter: Boolean, pageOffset: Int, darkMode: Boolean) {
             selectedDay = day
             this.events = events
             this.calendarMap = calendarMap
             this.showFooter = showFooter
             this.pageOffset = pageOffset
+            this.darkMode = darkMode
+            applyPalette()
             invalidate()
         }
 
@@ -4037,8 +4723,8 @@ class MainActivity : AppCompatActivity() {
         private fun sp(v: Float): Float = v * resources.displayMetrics.scaledDensity
     }
 
-    // MonthCanvasView — graphical month grid
-// ══════════════════════════════════════════════════════════════════════════════
+    // MonthCanvasView ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â graphical month grid
+// ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚Â
     class MonthCanvasView(context: android.content.Context) : View(context) {
 
         private var selectedDay: Calendar = Calendar.getInstance()
@@ -4046,6 +4732,7 @@ class MainActivity : AppCompatActivity() {
         private var events: List<CalendarRepository.Event> = emptyList()
         private var onDayClick: ((Calendar) -> Unit)? = null
         private var firstDayOfWeek: Int = Calendar.getInstance().firstDayOfWeek
+        private var darkMode: Boolean = false
 
         data class PlacedBlock(
             val ev: CalendarRepository.Event,
@@ -4062,11 +4749,13 @@ class MainActivity : AppCompatActivity() {
         private var timedByCell: Map<Pair<Int,Int>, List<CalendarRepository.Event>> = emptyMap()
         private val today: Calendar = Calendar.getInstance()
 
-        fun update(day: Calendar, evs: List<CalendarRepository.Event>, showFooter: Boolean, firstDayOfWeek: Int) {
+        fun update(day: Calendar, evs: List<CalendarRepository.Event>, showFooter: Boolean, firstDayOfWeek: Int, darkMode: Boolean) {
             selectedDay = day
             this.showFooter = showFooter
             events = evs
             this.firstDayOfWeek = firstDayOfWeek
+            this.darkMode = darkMode
+            applyPalette()
             buildLayout()
             invalidate()
         }
@@ -4130,7 +4819,7 @@ class MainActivity : AppCompatActivity() {
                     noon.timeInMillis / 86_400_000L
                 }
 
-                // Rad 2097–2100 — ersätt spanning-filtret med detta:
+                // Rad 2097ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ2100 ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ersÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¤tt spanning-filtret med detta:
                 val wStartEpoch = weekDayEpochs.first()
                 val wEndEpoch   = weekDayEpochs.last()
 
@@ -4213,7 +4902,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Paints — simplified month view, same readable font size as week view
+        // Paints ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â simplified month view, same readable font size as week view
         private val FONT = 14f
         private val pBg      = Paint().apply { color = Color.WHITE }
         private val pGrid    = Paint().apply { color = Color.BLACK; strokeWidth = 1f }
@@ -4231,6 +4920,21 @@ class MainActivity : AppCompatActivity() {
         }
         private val pWeekend = Paint().apply {
             color = Color.rgb(251, 251, 251)
+        }
+
+        private fun applyPalette() {
+            val bg = if (darkMode) Color.BLACK else Color.WHITE
+            val fg = if (darkMode) Color.WHITE else Color.BLACK
+            val line = if (darkMode) Color.rgb(95, 95, 95) else Color.BLACK
+            val weekend = if (darkMode) Color.rgb(20, 20, 20) else Color.rgb(251, 251, 251)
+            val card = if (darkMode) Color.rgb(28, 28, 28) else Color.WHITE
+            pBg.color = bg
+            pGrid.color = line
+            pEvFill.color = card
+            pEvStroke.color = fg
+            pText.color = fg
+            pTextBold.color = fg
+            pWeekend.color = weekend
         }
 
         override fun onDraw(canvas: Canvas) {
@@ -4286,7 +4990,7 @@ class MainActivity : AppCompatActivity() {
 
                     canvas.drawRect(cl, rowTop, cr, rowBottom, if (isWeekend) pWeekend else pBg)
 
-                    // Day number — centered and bold
+                    // Day number ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â centered and bold
                     val dayCenterX = (cl + cr) / 2f
                     val dayTextY = rowTop + 18f
                     pTextBold.textAlign = Paint.Align.CENTER
@@ -4377,5 +5081,3 @@ class MainActivity : AppCompatActivity() {
                     a.get(Calendar.DAY_OF_MONTH) == b.get(Calendar.DAY_OF_MONTH)
     }
 }
-
-
