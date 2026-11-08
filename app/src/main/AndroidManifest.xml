@@ -59,6 +59,7 @@
         <provider
             android:name=".LauncherIntegrationProvider"
             android:authorities="com.gustav.minicalendar.launcher"
+            android:readPermission="android.permission.READ_CALENDAR"
             android:exported="true" />
 
     </application>

@@ -37,13 +37,7 @@ object AlarmScheduler {
 
         val fallbackMinutes = prefs.getInt("alarm_engine_fallback_minutes", 10)
 
-        val enabledCalendarIds = prefs.all
-            .filterKeys { it.startsWith("read_calendar_") }
-            .mapNotNull { (key, value) ->
-                if (value == true) key.removePrefix("read_calendar_").toLongOrNull() else null
-            }
-            .toSet()
-            .takeIf { it.isNotEmpty() }
+        val enabledCalendarIds = CalendarSelection.enabledIds(prefs)
 
         val now = System.currentTimeMillis()
         val horizon = now + 48L * 60L * 60L * 1000L

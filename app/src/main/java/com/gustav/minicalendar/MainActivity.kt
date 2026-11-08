@@ -304,7 +304,7 @@ class MainActivity : AppCompatActivity() {
         val eventsForDay = repo?.getEvents(
             dayStart,
             dayEnd,
-            enabledCalendarIds.takeIf { it.isNotEmpty() }
+            enabledCalendarIds
         ).orEmpty()
 
         val matched = eventsForDay.firstOrNull { it.id == eventId && it.startMillis == eventStart }
@@ -696,14 +696,9 @@ class MainActivity : AppCompatActivity() {
         repo = CalendarRepository(this)
         // Default: enable all calendars
         val cals = repo!!.getCalendars()
-        val savedReadIds = prefs.all
-            .filterKeys { it.startsWith("read_calendar_") }
-            .mapNotNull { (key, value) ->
-                if (value == true) key.removePrefix("read_calendar_").toLongOrNull() else null
-            }
-            .toSet()
+        val savedReadIds = CalendarSelection.enabledIds(prefs)
 
-        enabledCalendarIds = if (savedReadIds.isNotEmpty()) {
+        enabledCalendarIds = if (savedReadIds != null) {
             cals.map { it.id }.filter { it in savedReadIds }.toMutableSet()
         } else {
             cals.map { it.id }.toMutableSet().also { ids ->
@@ -725,7 +720,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun reloadEvents() {
         val r = repo ?: return
-        val enabled = enabledCalendarIds.takeIf { it.isNotEmpty() }
+        val enabled = enabledCalendarIds
         calendarMap = r.getCalendars().associateBy { it.id }
 
         // Week window
@@ -2061,7 +2056,7 @@ class MainActivity : AppCompatActivity() {
         val result = mutableListOf<CalendarRepository.Event>()
         val r = repo
         if (r != null) {
-            val evs = r.getEvents(dayStartMs, dayEndMs, enabledCalendarIds.takeIf { it.isNotEmpty() })
+            val evs = r.getEvents(dayStartMs, dayEndMs, enabledCalendarIds)
             val noon = (selectedDay.clone() as Calendar).apply {
                 set(Calendar.HOUR_OF_DAY, 12); set(Calendar.MINUTE, 0)
                 set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
@@ -2096,7 +2091,7 @@ class MainActivity : AppCompatActivity() {
 
         if (repo != null) {
             val evs = repo!!.getEvents(dayStartMs, dayEndMs,
-                enabledCalendarIds.takeIf { it.isNotEmpty() })
+                enabledCalendarIds)
             for (ev in evs) {
                 if (ev.isAllDay) {
                     val evStartEpoch = ev.startMillis / 86_400_000L

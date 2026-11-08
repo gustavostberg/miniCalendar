@@ -4,13 +4,17 @@ import android.Manifest
 import android.content.ContentProvider
 import android.content.ContentValues
 import android.content.Context
+import android.content.SharedPreferences
 import android.content.UriMatcher
 import android.content.pm.PackageManager
 import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
+import android.os.Bundle
 import androidx.core.content.ContextCompat
-import java.util.Calendar
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZoneOffset
 import java.util.Locale
 
 class LauncherIntegrationProvider : ContentProvider() {
@@ -25,6 +29,12 @@ class LauncherIntegrationProvider : ContentProvider() {
         const val COLUMN_END_MILLIS = "endMillis"
         const val COLUMN_IS_ALL_DAY = "isAllDay"
         const val COLUMN_LOCATION = "location"
+        const val COLUMN_EVENT_ID = "eventId"
+        const val EXTRA_VERSION = "integrationVersion"
+        const val EXTRA_CALENDAR_ACCESS = "calendarAccess"
+        const val QUERY_START = "startMillis"
+        const val QUERY_END = "endMillis"
+        const val QUERY_LIMIT = "limit"
 
         val EVENTS_URI: Uri = Uri.parse("content://$AUTHORITY/$PATH_EVENTS")
     }
@@ -34,7 +44,17 @@ class LauncherIntegrationProvider : ContentProvider() {
             addURI(AUTHORITY, PATH_EVENTS, MATCH_EVENTS)
         }
 
-    override fun onCreate(): Boolean = true
+    private val preferencesListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key?.startsWith("read_calendar_") == true) {
+            context?.contentResolver?.notifyChange(EVENTS_URI, null, false)
+        }
+    }
+
+    override fun onCreate(): Boolean {
+        context?.getSharedPreferences("minicalendar", Context.MODE_PRIVATE)
+            ?.registerOnSharedPreferenceChangeListener(preferencesListener)
+        return true
+    }
 
     override fun query(
         uri: Uri,
@@ -44,7 +64,7 @@ class LauncherIntegrationProvider : ContentProvider() {
         sortOrder: String?,
     ): Cursor {
         return when (uriMatcher.match(uri)) {
-            MATCH_EVENTS -> queryEvents()
+            MATCH_EVENTS -> queryEvents(uri)
             else -> throw IllegalArgumentException("Unknown uri: $uri")
         }
     }
@@ -67,45 +87,56 @@ class LauncherIntegrationProvider : ContentProvider() {
         selectionArgs: Array<out String>?,
     ): Int = 0
 
-    private fun queryEvents(): Cursor {
+    private fun queryEvents(uri: Uri): Cursor {
         val ctx = context ?: return emptyCursor()
         if (
             ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_CALENDAR) !=
                 PackageManager.PERMISSION_GRANTED
         ) {
-            return emptyCursor()
+            return emptyCursor().apply { extras = metadata(false) }
         }
 
         val repository = CalendarRepository(ctx)
-        val enabledCalendarIds = loadEnabledCalendarIds(ctx, repository)
-        val todayStart = Calendar.getInstance().startOfDayMillis()
         val now = System.currentTimeMillis()
-        val horizon = Calendar.getInstance().apply { add(Calendar.DAY_OF_MONTH, 14) }.timeInMillis
+        val zone = ZoneId.systemDefault()
+        val today = Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
+        val start = uri.getQueryParameter(QUERY_START)?.let { requireNotNull(it.toLongOrNull()) }
+            ?: today.atStartOfDay(zone).toInstant().toEpochMilli()
+        val end = uri.getQueryParameter(QUERY_END)?.let { requireNotNull(it.toLongOrNull()) }
+            ?: today.plusDays(14).atStartOfDay(zone).toInstant().toEpochMilli()
+        require(end > start && end - start <= 32L * 86_400_000L) { "Invalid event window" }
+        val limit = uri.getQueryParameter(QUERY_LIMIT)?.let { requireNotNull(it.toIntOrNull()).coerceIn(1, 512) } ?: 4
+        val startDate = Instant.ofEpochMilli(start).atZone(zone).toLocalDate()
+        val endDate = Instant.ofEpochMilli(end).atZone(zone).toLocalDate().plusDays(1)
+        val enabledCalendarIds = CalendarSelection.enabledIds(ctx.getSharedPreferences("minicalendar", Context.MODE_PRIVATE))
         val events =
             repository.getEvents(
-                startMillis = todayStart,
-                endMillis = horizon,
-                enabledCalendarIds = enabledCalendarIds.takeIf { it.isNotEmpty() },
+                startMillis = minOf(start, startDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()),
+                endMillis = maxOf(end, endDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()),
+                enabledCalendarIds = enabledCalendarIds,
             )
-                .filter { event -> event.endMillis > now || (event.isAllDay && event.endMillis > todayStart) }
+                .filter { event -> LauncherEventWindow.includes(event, start, end, now, zone) }
                 .sortedWith(
                     compareBy<CalendarRepository.Event>({ it.startMillis }, { it.title.lowercase(Locale.getDefault()) }),
                 )
-                .take(4)
+                .take(limit)
 
         val cursor = emptyCursor()
-        events.forEachIndexed { index, event ->
+        events.forEach { event ->
             cursor.addRow(
                 arrayOf(
-                    index.toLong(),
+                    event.id,
                     event.title,
                     event.startMillis,
                     event.endMillis,
                     if (event.isAllDay) 1 else 0,
                     event.location,
+                    event.id,
                 ),
             )
         }
+        cursor.extras = metadata(true)
+        cursor.setNotificationUri(ctx.contentResolver, EVENTS_URI)
         return cursor
     }
 
@@ -118,37 +149,13 @@ class LauncherIntegrationProvider : ContentProvider() {
                 COLUMN_END_MILLIS,
                 COLUMN_IS_ALL_DAY,
                 COLUMN_LOCATION,
+                COLUMN_EVENT_ID,
             ),
         )
     }
 
-    private fun loadEnabledCalendarIds(
-        context: Context,
-        repository: CalendarRepository,
-    ): Set<Long> {
-        val prefs = context.getSharedPreferences("minicalendar", Context.MODE_PRIVATE)
-        val calendars = repository.getCalendars()
-        val savedReadIds =
-            prefs.all
-                .filterKeys { it.startsWith("read_calendar_") }
-                .mapNotNull { (key, value) ->
-                    if (value == true) key.removePrefix("read_calendar_").toLongOrNull() else null
-                }
-                .toSet()
-
-        return if (savedReadIds.isNotEmpty()) {
-            calendars.map { it.id }.filter { it in savedReadIds }.toSet()
-        } else {
-            calendars.map { it.id }.toSet()
-        }
-    }
-
-    private fun Calendar.startOfDayMillis(): Long {
-        return apply {
-            set(Calendar.HOUR_OF_DAY, 0)
-            set(Calendar.MINUTE, 0)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-        }.timeInMillis
+    private fun metadata(calendarAccess: Boolean) = Bundle().apply {
+        putInt(EXTRA_VERSION, 2)
+        putBoolean(EXTRA_CALENDAR_ACCESS, calendarAccess)
     }
 }
