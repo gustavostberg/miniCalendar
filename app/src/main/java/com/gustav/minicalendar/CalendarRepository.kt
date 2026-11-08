@@ -3,11 +3,13 @@ package com.gustav.minicalendar
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
+import android.content.ContentProviderOperation
 import android.database.Cursor
 import android.net.Uri
 import android.provider.CalendarContract
 import java.text.SimpleDateFormat
 import java.util.Calendar
+import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
@@ -41,8 +43,12 @@ class CalendarRepository(private val context: Context) {
         val rrule: String? = null,
         val reminderMinutes: Int? = null,
         val originalStartMillis: Long? = null,   // master DTSTART from Events table
-        val originalEndMillis: Long? = null      // master DTEND from Events table
+        val originalEndMillis: Long? = null,     // master DTEND from Events table
+        val originalId: Long? = null,
+        val originalInstanceTime: Long? = null
     ) {
+        val isRecurring: Boolean get() = !rrule.isNullOrBlank() || originalId != null
+        val displayDescription: String get() = EventText.description(description)
         val startMin: Int get() {
             val c = Calendar.getInstance()
             c.timeInMillis = startMillis
@@ -154,7 +160,9 @@ class CalendarRepository(private val context: Context) {
         val dtStart: Long?,
         val dtEnd: Long?,
         val duration: String?,
-        val reminderMinutes: Int?
+        val reminderMinutes: Int?,
+        val originalId: Long?,
+        val originalInstanceTime: Long?
     )
 
     private fun loadMasterEventInfo(eventIds: Set<Long>): Map<Long, MasterEventInfo> {
@@ -165,7 +173,9 @@ class CalendarRepository(private val context: Context) {
             CalendarContract.Events.RRULE,
             CalendarContract.Events.DTSTART,
             CalendarContract.Events.DTEND,
-            CalendarContract.Events.DURATION
+            CalendarContract.Events.DURATION,
+            CalendarContract.Events.ORIGINAL_ID,
+            CalendarContract.Events.ORIGINAL_INSTANCE_TIME
         )
         val idList = eventIds.joinToString(",")
         val selection = "${CalendarContract.Events._ID} IN ($idList)"
@@ -199,7 +209,13 @@ class CalendarRepository(private val context: Context) {
                     dtStart = dtStart,
                     dtEnd = dtEnd,
                     duration = duration?.takeIf { s -> s.isNotBlank() },
-                    reminderMinutes = null
+                    reminderMinutes = null,
+                    originalId = it.getColumnIndex(CalendarContract.Events.ORIGINAL_ID).let { index ->
+                        if (it.isNull(index)) null else it.getLong(index)
+                    },
+                    originalInstanceTime = it.getColumnIndex(CalendarContract.Events.ORIGINAL_INSTANCE_TIME).let { index ->
+                        if (it.isNull(index)) null else it.getLong(index)
+                    }
                 )
             }
         }
@@ -273,17 +289,26 @@ class CalendarRepository(private val context: Context) {
             CalendarContract.Instances.DESCRIPTION
         )
 
-        val calFilter = enabledCalendarIds?.joinToString(",") { it.toString() }
-        val selection = if (calFilter != null)
-            "${CalendarContract.Instances.CALENDAR_ID} IN ($calFilter)"
-        else null
+        val filters = mutableListOf(
+            "${CalendarContract.Events.DELETED}=0",
+            "(${CalendarContract.Instances.STATUS} IS NULL OR ${CalendarContract.Instances.STATUS}<>${CalendarContract.Events.STATUS_CANCELED})",
+            "${CalendarContract.Instances.LAST_SYNCED}=0"
+        )
+        enabledCalendarIds?.let { ids ->
+            if (ids.isEmpty()) return emptyList()
+            filters.add("${CalendarContract.Instances.CALENDAR_ID} IN (${ids.joinToString(",")})")
+        }
+        val selection = filters.joinToString(" AND ")
 
         val cursor: Cursor? = try {
             context.contentResolver.query(
                 builder.build(), projection, selection, null,
                 "${CalendarContract.Instances.BEGIN} ASC"
             )
-        } catch (e: Exception) { null }
+        } catch (e: Exception) {
+            android.util.Log.e("MiniCal", "Could not load calendar instances", e)
+            null
+        }
 
         cursor?.use {
             val idxId       = it.getColumnIndex(CalendarContract.Instances.EVENT_ID)
@@ -327,7 +352,9 @@ class CalendarRepository(private val context: Context) {
                 rrule = master?.rrule,
                 reminderMinutes = master?.reminderMinutes,
                 originalStartMillis = master?.dtStart,
-                originalEndMillis = master?.dtEnd
+                originalEndMillis = master?.dtEnd,
+                originalId = master?.originalId,
+                originalInstanceTime = master?.originalInstanceTime
             )
         }
     }
@@ -447,33 +474,17 @@ class CalendarRepository(private val context: Context) {
         }
     }
 
-    private fun isGoogleCalendar(cal: CalInfo?): Boolean {
-        if (cal == null) return false
-        val accountType = cal.accountType.trim().lowercase()
-        return accountType == "com.google" || accountType.contains("google")
-    }
-
-    private fun eventInsertUriForCalendar(calendarId: Long): Uri {
-        val cal = calendarInfoForId(calendarId)
-        if (!isGoogleCalendar(cal)) return CalendarContract.Events.CONTENT_URI
-
-        return CalendarContract.Events.CONTENT_URI.buildUpon()
-            .appendQueryParameter(CalendarContract.CALLER_IS_SYNCADAPTER, "true")
-            .appendQueryParameter(CalendarContract.Calendars.ACCOUNT_NAME, cal!!.accountName)
-            .appendQueryParameter(CalendarContract.Calendars.ACCOUNT_TYPE, cal.accountType)
-            .build()
-    }
-
-    private fun eventUpdateUriForCalendar(eventId: Long, calendarId: Long): Uri {
-        val baseUri = ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, eventId)
-        val cal = calendarInfoForId(calendarId)
-        if (!isGoogleCalendar(cal)) return baseUri
-
-        return baseUri.buildUpon()
-            .appendQueryParameter(CalendarContract.CALLER_IS_SYNCADAPTER, "true")
-            .appendQueryParameter(CalendarContract.Calendars.ACCOUNT_NAME, cal!!.accountName)
-            .appendQueryParameter(CalendarContract.Calendars.ACCOUNT_TYPE, cal.accountType)
-            .build()
+    private fun putEventTiming(values: ContentValues, start: Long, end: Long, allDay: Boolean, recurring: Boolean) {
+        values.put(CalendarContract.Events.DTSTART, start)
+        if (recurring) {
+            values.putNull(CalendarContract.Events.DTEND)
+            val duration = if (allDay) "P${((end - start) / 86_400_000L).coerceAtLeast(1L)}D"
+                else "PT${((end - start) / 1000L).coerceAtLeast(60L)}S"
+            values.put(CalendarContract.Events.DURATION, duration)
+        } else {
+            values.put(CalendarContract.Events.DTEND, end)
+            values.putNull(CalendarContract.Events.DURATION)
+        }
     }
 
     private fun replaceReminders(eventId: Long, reminderMinutes: Int?) {
@@ -518,8 +529,8 @@ class CalendarRepository(private val context: Context) {
         val values = ContentValues().apply {
             put(CalendarContract.Events.CALENDAR_ID, calendarId)
             put(CalendarContract.Events.TITLE, title)
-            put(CalendarContract.Events.DTSTART, startMillis)
-            put(CalendarContract.Events.DTEND, endMillis)
+            putEventTiming(this, startMillis, endMillis, false, !rrule.isNullOrBlank())
+            put(CalendarContract.Events.STATUS, CalendarContract.Events.STATUS_CONFIRMED)
             put(CalendarContract.Events.DESCRIPTION, description)
             put(CalendarContract.Events.EVENT_LOCATION, location)
             put(CalendarContract.Events.EVENT_TIMEZONE, TimeZone.getDefault().id)
@@ -527,7 +538,7 @@ class CalendarRepository(private val context: Context) {
             applyCalendarIdentity(this, calendarId, cleanAttendees)
         }
         return try {
-            val uri = context.contentResolver.insert(eventInsertUriForCalendar(calendarId), values)
+            val uri = context.contentResolver.insert(CalendarContract.Events.CONTENT_URI, values)
             val eventId = uri?.let { ContentUris.parseId(it) }
             if (eventId != null) {
                 replaceReminders(eventId, reminderMinutes)
@@ -558,8 +569,8 @@ class CalendarRepository(private val context: Context) {
         val values = ContentValues().apply {
             put(CalendarContract.Events.CALENDAR_ID, calendarId)
             put(CalendarContract.Events.TITLE, title)
-            put(CalendarContract.Events.DTSTART, startDayMillis)
-            put(CalendarContract.Events.DTEND, endDayMillis)
+            putEventTiming(this, startDayMillis, endDayMillis, true, !rrule.isNullOrBlank())
+            put(CalendarContract.Events.STATUS, CalendarContract.Events.STATUS_CONFIRMED)
             put(CalendarContract.Events.ALL_DAY, 1)
             put(CalendarContract.Events.DESCRIPTION, description)
             put(CalendarContract.Events.EVENT_LOCATION, location)
@@ -568,7 +579,7 @@ class CalendarRepository(private val context: Context) {
             applyCalendarIdentity(this, calendarId, cleanAttendees)
         }
         return try {
-            val uri = context.contentResolver.insert(eventInsertUriForCalendar(calendarId), values)
+            val uri = context.contentResolver.insert(CalendarContract.Events.CONTENT_URI, values)
             val eventId = uri?.let { ContentUris.parseId(it) }
             if (eventId != null) {
                 replaceReminders(eventId, reminderMinutes)
@@ -643,9 +654,7 @@ class CalendarRepository(private val context: Context) {
         val values = ContentValues().apply {
             put(CalendarContract.Events.CALENDAR_ID, calendarId)
             put(CalendarContract.Events.TITLE, title)
-            put(CalendarContract.Events.DTSTART, finalStartMillis)
-            put(CalendarContract.Events.DTEND, finalEndMillis)
-            putNull(CalendarContract.Events.DURATION)
+            putEventTiming(this, finalStartMillis, finalEndMillis, false, hasNewSeries)
             put(CalendarContract.Events.DESCRIPTION, description)
             put(CalendarContract.Events.EVENT_LOCATION, location)
             put(CalendarContract.Events.ALL_DAY, 0)
@@ -654,7 +663,7 @@ class CalendarRepository(private val context: Context) {
             applyCalendarIdentity(this, calendarId, cleanAttendees.orEmpty())
         }
         return try {
-            val uri = eventUpdateUriForCalendar(eventId, calendarId)
+            val uri = ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, eventId)
             val updated = context.contentResolver.update(uri, values, null, null) > 0
             if (updated) {
                 replaceReminders(eventId, reminderMinutes)
@@ -702,9 +711,7 @@ class CalendarRepository(private val context: Context) {
         val values = ContentValues().apply {
             put(CalendarContract.Events.CALENDAR_ID, calendarId)
             put(CalendarContract.Events.TITLE, title)
-            put(CalendarContract.Events.DTSTART, finalStartDayMillis)
-            put(CalendarContract.Events.DTEND, finalEndDayMillis)
-            putNull(CalendarContract.Events.DURATION)
+            putEventTiming(this, finalStartDayMillis, finalEndDayMillis, true, hasNewSeries)
             put(CalendarContract.Events.ALL_DAY, 1)
             put(CalendarContract.Events.DESCRIPTION, description)
             put(CalendarContract.Events.EVENT_LOCATION, location)
@@ -713,7 +720,7 @@ class CalendarRepository(private val context: Context) {
             applyCalendarIdentity(this, calendarId, cleanAttendees.orEmpty())
         }
         return try {
-            val uri = eventUpdateUriForCalendar(eventId, calendarId)
+            val uri = ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, eventId)
             val updated = context.contentResolver.update(uri, values, null, null) > 0
             if (updated) {
                 replaceReminders(eventId, reminderMinutes)
@@ -737,11 +744,18 @@ class CalendarRepository(private val context: Context) {
 
 
     private data class RecurringDeleteInfo(
+        val id: Long,
         val calendarId: Long,
         val isAllDay: Boolean,
         val rrule: String?,
         val dtStart: Long?,
-        val eventTimezone: String?
+        val eventTimezone: String?,
+        val dtEnd: Long?,
+        val duration: String?,
+        val originalId: Long?,
+        val originalInstanceTime: Long?,
+        val syncId: String?,
+        val exdate: String?
     )
 
     private fun loadRecurringDeleteInfo(eventId: Long): RecurringDeleteInfo? {
@@ -750,7 +764,14 @@ class CalendarRepository(private val context: Context) {
             CalendarContract.Events.ALL_DAY,
             CalendarContract.Events.RRULE,
             CalendarContract.Events.DTSTART,
-            CalendarContract.Events.EVENT_TIMEZONE
+            CalendarContract.Events.EVENT_TIMEZONE,
+            CalendarContract.Events.DTEND,
+            CalendarContract.Events.DURATION,
+            CalendarContract.Events.ORIGINAL_ID,
+            CalendarContract.Events.ORIGINAL_INSTANCE_TIME,
+            CalendarContract.Events.DELETED,
+            CalendarContract.Events._SYNC_ID,
+            CalendarContract.Events.EXDATE
         )
         val cursor: Cursor? = try {
             context.contentResolver.query(
@@ -763,13 +784,20 @@ class CalendarRepository(private val context: Context) {
         } catch (e: Exception) { null }
 
         return cursor?.use {
-            if (!it.moveToFirst()) return@use null
+            if (!it.moveToFirst() || it.getInt(9) != 0) return@use null
             RecurringDeleteInfo(
+                id = eventId,
                 calendarId = it.getLong(0),
                 isAllDay = it.getInt(1) == 1,
                 rrule = it.getString(2),
                 dtStart = if (!it.isNull(3)) it.getLong(3) else null,
-                eventTimezone = it.getString(4)
+                eventTimezone = it.getString(4),
+                dtEnd = if (it.isNull(5)) null else it.getLong(5),
+                duration = it.getString(6),
+                originalId = if (it.isNull(7)) null else it.getLong(7),
+                originalInstanceTime = if (it.isNull(8)) null else it.getLong(8),
+                syncId = it.getString(10),
+                exdate = it.getString(11)
             )
         }
     }
@@ -805,22 +833,53 @@ class CalendarRepository(private val context: Context) {
     }
 
     fun deleteSingleOccurrence(event: Event): Boolean {
-        val info = loadRecurringDeleteInfo(event.id) ?: return deleteEvent(event.id)
+        val info = loadRecurringDeleteInfo(event.id) ?: return false
+        if (info.originalId != null) {
+            return try {
+                context.contentResolver.update(
+                    ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, event.id),
+                    ContentValues().apply { put(CalendarContract.Events.STATUS, CalendarContract.Events.STATUS_CANCELED) },
+                    null, null
+                ) > 0
+            } catch (e: Exception) {
+                android.util.Log.e("MiniCal", "cancelException failed", e)
+                false
+            }
+        }
         if (info.rrule.isNullOrBlank()) return deleteEvent(event.id)
-
+        val operations = arrayListOf<ContentProviderOperation>()
+        repairLegacyTiming(info, event)?.let { operations.add(it) }
+        if (info.syncId.isNullOrBlank() || info.syncId.startsWith("SYNC_ERROR:")) {
+            // Unsynced series have no server identity for an exception to reference.
+            val excluded = SimpleDateFormat(if (info.isAllDay) "yyyyMMdd" else "yyyyMMdd'T'HHmmss'Z'", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }.format(Date(event.startMillis))
+            val dates = listOfNotNull(info.exdate?.takeIf { it.isNotBlank() }, excluded).joinToString(",")
+            operations.add(ContentProviderOperation.newUpdate(
+                ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, info.id)
+            ).withValues(ContentValues().apply {
+                put(CalendarContract.Events.EXDATE, dates)
+                put(CalendarContract.Events.DTSTART, info.dtStart)
+                put(CalendarContract.Events.RRULE, info.rrule)
+            }).withExpectedCount(1).build())
+            return try {
+                context.contentResolver.applyBatch(CalendarContract.AUTHORITY, operations)
+                true
+            } catch (e: Exception) {
+                android.util.Log.e("MiniCal", "excludeUnsyncedOccurrence failed", e)
+                false
+            }
+        }
         val values = ContentValues().apply {
-            put(CalendarContract.Events.CALENDAR_ID, info.calendarId)
-            put(CalendarContract.Events.TITLE, event.title)
-            put(CalendarContract.Events.DTSTART, event.startMillis)
-            put(CalendarContract.Events.DTEND, event.endMillis)
-            put(CalendarContract.Events.EVENT_TIMEZONE, if (info.isAllDay) "UTC" else (info.eventTimezone ?: TimeZone.getDefault().id))
-            put(CalendarContract.Events.ALL_DAY, if (info.isAllDay) 1 else 0)
-            put(CalendarContract.Events.ORIGINAL_ID, event.id)
             put(CalendarContract.Events.ORIGINAL_INSTANCE_TIME, event.startMillis)
             put(CalendarContract.Events.STATUS, CalendarContract.Events.STATUS_CANCELED)
         }
+        // The provider copies the series identity and links the cancellation for sync.
+        operations.add(ContentProviderOperation.newInsert(
+            ContentUris.withAppendedId(CalendarContract.Events.CONTENT_EXCEPTION_URI, event.id)
+        ).withValues(values).build())
         return try {
-            context.contentResolver.insert(eventInsertUriForCalendar(info.calendarId), values) != null
+            context.contentResolver.applyBatch(CalendarContract.AUTHORITY, operations).last().uri != null
         } catch (e: Exception) {
             android.util.Log.e("MiniCal", "deleteSingleOccurrence failed", e)
             false
@@ -828,22 +887,33 @@ class CalendarRepository(private val context: Context) {
     }
 
     fun deleteThisAndFuture(event: Event): Boolean {
-        val info = loadRecurringDeleteInfo(event.id) ?: return deleteEvent(event.id)
+        val selected = loadRecurringDeleteInfo(event.id) ?: return false
+        val info = if (selected.originalId != null) loadRecurringDeleteInfo(selected.originalId) ?: return false else selected
         val rrule = info.rrule ?: return deleteEvent(event.id)
-        val masterStart = info.dtStart ?: return deleteEvent(event.id)
+        val masterStart = info.dtStart ?: return false
+        val instanceStart = selected.originalInstanceTime ?: event.originalInstanceTime ?: event.startMillis
 
-        if (event.startMillis <= masterStart + 1000L) {
-            return deleteEvent(event.id)
+        if (instanceStart <= masterStart) {
+            return deleteEvent(info.id)
         }
 
-        val untilValue = formatUntilForRecurringDelete(event.startMillis, info.isAllDay)
+        val untilValue = formatUntilForRecurringDelete(instanceStart, info.isAllDay)
         val trimmedRRule = replaceUntilInRRule(rrule, untilValue)
         val values = ContentValues().apply {
             put(CalendarContract.Events.RRULE, trimmedRRule)
+            put(CalendarContract.Events.DTSTART, masterStart)
         }
+        val operations = arrayListOf<ContentProviderOperation>()
+        repairLegacyTiming(info, event)?.let { operations.add(it) }
+        operations.add(ContentProviderOperation.newUpdate(
+            ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, info.id)
+        ).withValues(values).withExpectedCount(1).build())
+        operations.add(ContentProviderOperation.newDelete(CalendarContract.Events.CONTENT_URI)
+            .withSelection("${CalendarContract.Events.ORIGINAL_ID}=? AND ${CalendarContract.Events.ORIGINAL_INSTANCE_TIME}>=?",
+                arrayOf(info.id.toString(), instanceStart.toString())).build())
         return try {
-            val uri = eventUpdateUriForCalendar(event.id, info.calendarId)
-            context.contentResolver.update(uri, values, null, null) > 0
+            context.contentResolver.applyBatch(CalendarContract.AUTHORITY, operations)
+            true
         } catch (e: Exception) {
             android.util.Log.e("MiniCal", "deleteThisAndFuture failed", e)
             false
@@ -856,11 +926,33 @@ class CalendarRepository(private val context: Context) {
     fun deleteEvent(eventId: Long): Boolean {
         val uri = ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, eventId)
         return try {
-            context.contentResolver.delete(uri, null, null) > 0
+            // Delete exceptions explicitly so already-synced moved instances also disappear.
+            val operations = arrayListOf(
+                ContentProviderOperation.newDelete(CalendarContract.Events.CONTENT_URI)
+                    .withSelection("${CalendarContract.Events.ORIGINAL_ID}=?", arrayOf(eventId.toString())).build(),
+                ContentProviderOperation.newDelete(uri).withExpectedCount(1).build()
+            )
+            context.contentResolver.applyBatch(CalendarContract.AUTHORITY, operations)
+            true
         } catch (e: Exception) {
             android.util.Log.e("MiniCal", "deleteEvent failed", e)
             false
         }
+    }
+
+    fun deleteSeries(event: Event): Boolean {
+        val info = loadRecurringDeleteInfo(event.id) ?: return false
+        return deleteEvent(info.originalId ?: event.id)
+    }
+
+    private fun repairLegacyTiming(info: RecurringDeleteInfo, event: Event): ContentProviderOperation? {
+        if (!info.duration.isNullOrBlank() && info.dtEnd == null) return null
+        val start = info.dtStart ?: return null
+        val elapsed = info.dtEnd?.minus(start) ?: (event.endMillis - event.startMillis)
+        val values = ContentValues()
+        putEventTiming(values, start, start + elapsed, info.isAllDay, true)
+        return ContentProviderOperation.newUpdate(ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, info.id))
+            .withValues(values).withExpectedCount(1).build()
     }
 
 }

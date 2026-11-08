@@ -14,8 +14,8 @@ android {
         applicationId = "com.gustav.minicalendar"
         minSdk = 26
         targetSdk = 36
-        versionCode = 111
-        versionName = "1.11"
+        versionCode = 114
+        versionName = "1.14"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

@@ -3,6 +3,7 @@ package com.gustav.minicalendar
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.provider.CalendarContract
 import android.provider.ContactsContract
 import android.graphics.Canvas
 import android.graphics.Color
@@ -72,8 +73,24 @@ class MainActivity : AppCompatActivity() {
     private val refreshHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val refreshRunnable: Runnable = object : Runnable {
         override fun run() {
-            if (repo != null) { reloadEvents(); render() }
+            if (repo != null) {
+                reloadEvents()
+                AlarmScheduler.scheduleNext(this@MainActivity)
+                render()
+            }
             refreshHandler.postDelayed(this, 60_000L)
+        }
+    }
+    private val calendarObserverHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var calendarObserverRegistered = false
+    private var calendarObserverReschedulePending = false
+    private val calendarObserver = object : android.database.ContentObserver(calendarObserverHandler) {
+        override fun onChange(selfChange: Boolean) {
+            handleCalendarProviderChanged()
+        }
+
+        override fun onChange(selfChange: Boolean, uri: android.net.Uri?) {
+            handleCalendarProviderChanged()
         }
     }
     private var screen: Screen = Screen.MONTH
@@ -356,13 +373,52 @@ class MainActivity : AppCompatActivity() {
         render()
     }
 
+    private fun registerCalendarObserver() {
+        if (calendarObserverRegistered) return
+        try {
+            contentResolver.registerContentObserver(CalendarContract.Events.CONTENT_URI, true, calendarObserver)
+            contentResolver.registerContentObserver(CalendarContract.Reminders.CONTENT_URI, true, calendarObserver)
+            contentResolver.registerContentObserver(CalendarContract.Calendars.CONTENT_URI, true, calendarObserver)
+            calendarObserverRegistered = true
+        } catch (e: Exception) {
+            android.util.Log.w("MiniCalAlarm", "Could not register calendar observer", e)
+        }
+    }
+
+    private fun unregisterCalendarObserver() {
+        if (!calendarObserverRegistered) return
+        try {
+            contentResolver.unregisterContentObserver(calendarObserver)
+        } catch (_: Exception) {
+        }
+        calendarObserverRegistered = false
+    }
+
+    private fun handleCalendarProviderChanged() {
+        if (calendarObserverReschedulePending) return
+        calendarObserverReschedulePending = true
+        calendarObserverHandler.postDelayed({
+            calendarObserverReschedulePending = false
+            if (!hasCalendarPermissions()) return@postDelayed
+            if (repo == null) initRepo() else reloadEvents()
+            AlarmScheduler.scheduleNext(this)
+            render()
+        }, 1_000L)
+    }
+
     override fun onResume() {
         super.onResume()
         if (hasCalendarPermissions()) {
             if (repo == null) initRepo()
             ensureNotificationPermission()
-            if (repo != null) { reloadEvents(); render() }
+            registerCalendarObserver()
+            if (repo != null) {
+                reloadEvents()
+                AlarmScheduler.scheduleNext(this)
+                render()
+            }
         } else {
+            unregisterCalendarObserver()
             repo = null
             enabledCalendarIds.clear()
             cachedWeekEvents = emptyMap()
@@ -376,6 +432,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        unregisterCalendarObserver()
         refreshHandler.removeCallbacks(refreshRunnable)
     }
 
@@ -389,9 +446,12 @@ class MainActivity : AppCompatActivity() {
             if (granted) {
                 initRepo()
                 ensureNotificationPermission()
+                registerCalendarObserver()
+                AlarmScheduler.scheduleNext(this)
                 consumeOpenFocusDayIntent(intent)
                 consumeOpenEventIntent(intent)
             } else {
+                unregisterCalendarObserver()
                 repo = null
                 enabledCalendarIds.clear()
                 cachedWeekEvents = emptyMap()
@@ -1110,7 +1170,7 @@ class MainActivity : AppCompatActivity() {
                     val ok = when (choice) {
                         1 -> repo?.deleteSingleOccurrence(ev) ?: false
                         2 -> repo?.deleteThisAndFuture(ev) ?: false
-                        3 -> repo?.deleteEvent(ev.id) ?: false
+                        3 -> repo?.deleteSeries(ev) ?: false
                         else -> return true
                     }
                     if (ok) {
@@ -1691,7 +1751,11 @@ class MainActivity : AppCompatActivity() {
                     else -> {}
                 }
             }
-            body.text = raw
+            body.movementMethod = if (screen == Screen.EVENT) android.text.method.ScrollingMovementMethod.getInstance() else null
+            if (body.text.toString() != raw) {
+                body.text = raw
+                body.scrollTo(0, 0)
+            }
         }
         maybeFlashEpaperOnDarkViewChange()
 
@@ -1895,7 +1959,7 @@ class MainActivity : AppCompatActivity() {
 
 
     private fun isRecurringEvent(ev: CalendarRepository.Event?): Boolean =
-        ev?.rrule?.isNotBlank() == true
+        ev?.isRecurring == true
 
     private fun clearDeleteState() {
         eventDeletePending = false
@@ -1914,66 +1978,57 @@ class MainActivity : AppCompatActivity() {
             out.appendLine(getString(R.string.label_back_hint))
             return
         }
-        val timeFmt = java.text.SimpleDateFormat("HH:mm", Locale.getDefault())
-        val dateFmtFull = java.text.SimpleDateFormat("EEE d MMM yyyy", locale())
+        val timeFmt = SimpleDateFormat("HH:mm", locale())
+        val dateFmt = SimpleDateFormat("EEE d MMM yyyy", locale()).apply {
+            if (ev.isAllDay) timeZone = java.util.TimeZone.getTimeZone("UTC")
+        }
 
         out.appendLine(ev.title)
         out.appendLine()
-
-        val calName = calendarMap[ev.calendarId]?.name
-        if (calName != null) {
-            out.appendLine("ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ $calName")
+        calendarMap[ev.calendarId]?.name?.let {
+            out.appendLine("${getString(R.string.label_calendar)}: $it")
             out.appendLine()
         }
 
         if (ev.isAllDay) {
-            val startCal = Calendar.getInstance().apply { timeInMillis = ev.startMillis }
-            val endCal   = Calendar.getInstance().apply { timeInMillis = ev.endMillis - 1 }
-            if (ev.startDayEpoch == ev.endDayEpoch) {
-                out.appendLine("${getString(R.string.label_all_day)} ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· ${dateFmtFull.format(startCal.time)}")
-            } else {
-                out.appendLine(getString(R.string.label_all_day))
-                out.appendLine("  ${dateFmtFull.format(startCal.time)}")
-                out.appendLine("ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ ${dateFmtFull.format(endCal.time)}")
+            out.appendLine("${getString(R.string.label_all_day)}: ${dateFmt.format(Date(ev.startMillis))}")
+            if (ev.startDayEpoch != ev.endDayEpoch) {
+                out.appendLine("  - ${dateFmt.format(Date(ev.endMillis - 1))}")
             }
         } else {
-            val startCal = Calendar.getInstance().apply { timeInMillis = ev.startMillis }
-            out.appendLine(
-                "${timeFmt.format(java.util.Date(ev.startMillis))}ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ${timeFmt.format(java.util.Date(ev.endMillis))}" +
-                        "  ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·  ${dateFmtFull.format(startCal.time)}"
-            )
+            out.appendLine("${timeFmt.format(Date(ev.startMillis))}-${timeFmt.format(Date(ev.endMillis))}")
+            out.appendLine(dateFmt.format(Date(ev.startMillis)))
         }
 
         if (ev.location.isNotBlank()) {
             out.appendLine()
-            out.appendLine("ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒâ€šÃ‚Â ${ev.location}")
+            out.appendLine("${getString(R.string.label_location)}: ${ev.location}")
         }
-        if (!ev.rrule.isNullOrBlank()) {
+        if (ev.isRecurring) {
             out.appendLine()
-            out.appendLine("ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â Ãƒâ€šÃ‚Â» ${rruleToRepeatLabel(ev.rrule)}")
+            val repeat = ev.rrule?.let { rruleToRepeatLabel(it) }.orEmpty()
+            out.appendLine(if (repeat.isNotBlank()) "${getString(R.string.label_repeat)}: $repeat"
+                else getString(R.string.label_repeat))
         }
-        if (ev.reminderMinutes != null) {
+        ev.reminderMinutes?.let {
             out.appendLine()
-            out.appendLine("ÃƒÆ’Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒâ€šÃ‚Â° ${minutesToReminderLabel(ev.reminderMinutes, ev.isAllDay)}")
+            out.appendLine("${getString(R.string.label_reminder)}: ${minutesToReminderLabel(it, ev.isAllDay)}")
         }
-
-        if (ev.description.isNotBlank()) {
+        val description = ev.displayDescription
+        if (description.isNotBlank()) {
             out.appendLine()
-            out.appendLine(ev.description.lines().take(6).joinToString("\n"))
+            out.appendLine(description)
         }
 
         val attendees = repo?.getAttendees(ev.id).orEmpty()
         if (attendees.isNotEmpty()) {
             out.appendLine()
-            out.appendLine("ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã‹Å“Ãƒâ€šÃ‚Â¥ ${getString(R.string.label_attendees_count, attendees.size)}")
-            for (a in attendees) {
-                out.appendLine("  ${a.statusLabel} ${a.displayName}")
-            }
+            out.appendLine(getString(R.string.label_attendees_count, attendees.size))
+            for (a in attendees) out.appendLine("  ${a.statusLabel} ${a.displayName}")
         }
 
         out.appendLine()
-        out.appendLine("ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬".repeat(bodyCols.coerceAtLeast(20)))
-
+        out.appendLine("-".repeat(bodyCols.coerceIn(20, 60)))
         when {
             recurringDeleteMenuPending -> {
                 out.appendLine(getString(R.string.label_delete_recurring_event))
@@ -1982,15 +2037,9 @@ class MainActivity : AppCompatActivity() {
                 out.appendLine(getString(R.string.label_delete_whole_series))
                 out.appendLine(getString(R.string.label_cancel_hint))
             }
-            eventDeletePending -> {
-                out.appendLine(getString(R.string.label_delete_confirm, ev.title))
-            }
-            isRecurringEvent(ev) -> {
-                out.appendLine(getString(R.string.label_event_controls_recurring))
-            }
-            else -> {
-                out.appendLine(getString(R.string.label_event_controls_single))
-            }
+            eventDeletePending -> out.appendLine(getString(R.string.label_delete_confirm, ev.title))
+            isRecurringEvent(ev) -> out.appendLine(getString(R.string.label_event_controls_recurring))
+            else -> out.appendLine(getString(R.string.label_event_controls_single))
         }
     }
 
@@ -4508,7 +4557,7 @@ class MainActivity : AppCompatActivity() {
 
                 val titleLines = wrapText(ev.title, charsWide, 3)
                 val metaLines = metaParts.flatMap { wrapText(it, charsWide, 2) }
-                val descLines = if (ev.description.isBlank()) emptyList() else wrapText(ev.description, charsWide, 3)
+                val descLines = if (ev.displayDescription.isBlank()) emptyList() else wrapText(ev.displayDescription, charsWide, 3)
 
                 val contentLines = mutableListOf<String>()
                 contentLines.add(timeLabel)
